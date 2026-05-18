@@ -1,6 +1,7 @@
 import path from "node:path";
 
 const documentExtensions = new Set([".pdf", ".docx", ".odt", ".txt", ".md"]);
+const textDocumentExtensions = new Set([".txt", ".md"]);
 const imageExtensions = new Set([".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"]);
 const repositoryDocumentExtensions = new Set([
   ".md", ".txt", ".rst", ".adoc", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env", ".xml", ".csv",
@@ -21,7 +22,7 @@ export function isSupportedDocument(fileName: string): boolean {
 export function isTextLikeDocument(fileName: string): boolean {
   const extension = getExtension(fileName);
   const basename = path.basename(fileName).toLowerCase();
-  return documentExtensions.has(extension) || repositoryDocumentExtensions.has(extension) || repositoryDocumentBasenames.has(basename);
+  return textDocumentExtensions.has(extension) || repositoryDocumentExtensions.has(extension) || repositoryDocumentBasenames.has(basename);
 }
 
 export function isSupportedRepositoryDocument(fileName: string): boolean {
