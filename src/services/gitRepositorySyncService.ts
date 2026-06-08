@@ -7,6 +7,7 @@ import { env } from "../config/env";
 import { sha256 } from "../utils/hash";
 import { isSupportedRepositoryDocument } from "../utils/files";
 import { IngestionService } from "./ingestionService";
+import { runWithConcurrency } from "../utils/concurrency";
 
 const execFileAsync = promisify(execFile);
 const SKIPPED_DIRECTORIES = new Set([
@@ -97,8 +98,7 @@ export class GitRepositorySyncService {
     await access(repositoryRoot, fsConstants.R_OK);
 
     const files = await walkRepository(repositoryRoot);
-    let imported = 0;
-    let duplicates = 0;
+    const eligibleFiles: string[] = [];
     let skipped = 0;
 
     for (const filePath of files.filter(isSupportedRepositoryDocument)) {
@@ -108,8 +108,12 @@ export class GitRepositorySyncService {
         continue;
       }
 
+      eligibleFiles.push(filePath);
+    }
+
+    const results = await runWithConcurrency(eligibleFiles, env.INGESTION_IO_CONCURRENCY, async (filePath) => {
       const relativePath = path.relative(checkoutDir, filePath);
-      const result = await this.ingestionService.ingestFile({
+      return this.ingestionService.ingestFile({
         filePath,
         sourceType: "git",
         sourceRef: `${repositoryUrl}${branch ? `#${branch}` : ""}:${relativePath}`,
@@ -124,7 +128,11 @@ export class GitRepositorySyncService {
           gitCheckoutDir: checkoutDir
         }
       });
+    });
 
+    let imported = 0;
+    let duplicates = 0;
+    for (const result of results) {
       if (result.duplicate) {
         duplicates += 1;
       } else {

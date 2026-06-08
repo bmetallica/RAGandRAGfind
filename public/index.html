@@ -50,6 +50,10 @@
         background-image: linear-gradient(rgba(124, 224, 211, 0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(124, 224, 211, 0.08) 1px, transparent 1px);
         background-size: 28px 28px;
       }
+
+      .view-panel.hidden {
+        display: none;
+      }
     </style>
   </head>
   <body class="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(217,108,63,0.16),_transparent_28%),radial-gradient(circle_at_bottom_right,_rgba(124,224,211,0.16),_transparent_22%),linear-gradient(135deg,_#f8efe6,_#edf5f7)] font-body text-graphite dark:bg-[radial-gradient(circle_at_top_left,_rgba(217,108,63,0.14),_transparent_28%),radial-gradient(circle_at_bottom_right,_rgba(124,224,211,0.14),_transparent_22%),linear-gradient(135deg,_#0b0f18,_#161f2d)] dark:text-white">
@@ -65,13 +69,13 @@
             </p>
           </div>
           <div class="flex flex-wrap items-center gap-3">
-            <button id="settings-toggle" type="button" aria-label="Einstellungen" class="inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white/70 text-graphite shadow-sm transition hover:border-lagoon hover:text-graphite dark:border-white/10 dark:bg-white/10 dark:text-white">
+            <button id="settings-toggle" type="button" aria-label="Einstellungen (Wissensbasis &amp; Typen)" title="Wissensbasis &amp; Typen &ouml;ffnen" class="inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white/70 text-graphite shadow-sm transition hover:border-lagoon hover:text-graphite dark:border-white/10 dark:bg-white/10 dark:text-white">
               <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <circle cx="12" cy="12" r="3.25"></circle>
                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 8.92 4.6H9A1.65 1.65 0 0 0 10 3.09V3a2 2 0 0 1 4 0v.09A1.65 1.65 0 0 0 15 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c0 .68.4 1.3 1.02 1.57.17.07.35.11.53.11H21a2 2 0 0 1 0 4h-.09c-.18 0-.36.04-.53.11-.62.27-1.02.89-1.02 1.57Z"></path>
               </svg>
             </button>
-            <button id="admin-access-toggle" type="button" aria-label="Admin-Zugang" class="inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white/70 text-graphite shadow-sm transition hover:border-lagoon hover:text-graphite dark:border-white/10 dark:bg-white/10 dark:text-white">
+            <button id="admin-access-toggle" type="button" aria-label="Admin-Zugang (System)" title="System &ouml;ffnen" class="inline-flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white/70 text-graphite shadow-sm transition hover:border-lagoon hover:text-graphite dark:border-white/10 dark:bg-white/10 dark:text-white">
               <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <circle cx="12" cy="8" r="3.5"></circle>
                 <path d="M5 19.5c1.7-3 4.1-4.5 7-4.5s5.3 1.5 7 4.5"></path>
@@ -84,253 +88,109 @@
         </div>
       </section>
 
-      <div id="settings-modal" class="fixed inset-0 z-50 hidden overflow-y-auto bg-graphite/45 px-4 py-8 backdrop-blur-sm">
-        <div class="mx-auto max-w-5xl">
-          <div class="max-h-[calc(100vh-4rem)] overflow-y-auto rounded-[1.75rem] border border-white/50 bg-white/90 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-dusk/95">
-            <div class="flex items-start justify-between gap-4">
-              <div>
-                <h2 class="font-display text-2xl font-semibold">Einstellungen</h2>
-                <p class="mt-2 text-sm text-black/65 dark:text-white/60">Zentrale Einstellungen fuer Typdefinitionen und weitere UI-nahe Konfigurationen.</p>
-              </div>
-              <button id="settings-close" type="button" class="rounded-full border border-black/10 bg-white/70 px-3 py-2 text-sm font-semibold transition hover:border-lagoon dark:border-white/10 dark:bg-white/10">Schliessen</button>
-            </div>
+      <nav id="view-nav" class="sticky top-4 z-30 mt-6 flex flex-wrap gap-2 rounded-full border border-white/50 bg-white/75 p-2 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
+        <button type="button" data-view="uebersicht" class="view-nav-button rounded-full px-5 py-2.5 text-sm font-semibold text-black/60 transition hover:text-graphite dark:text-white/60 dark:hover:text-white">&Uuml;bersicht</button>
+        <button type="button" data-view="ingestion" class="view-nav-button rounded-full px-5 py-2.5 text-sm font-semibold text-black/60 transition hover:text-graphite dark:text-white/60 dark:hover:text-white">Ingestion</button>
+        <button type="button" data-view="dokumente" class="view-nav-button rounded-full px-5 py-2.5 text-sm font-semibold text-black/60 transition hover:text-graphite dark:text-white/60 dark:hover:text-white">Dokumente</button>
+        <button type="button" data-view="suche" class="view-nav-button rounded-full px-5 py-2.5 text-sm font-semibold text-black/60 transition hover:text-graphite dark:text-white/60 dark:hover:text-white">Suche</button>
+        <button type="button" data-view="wissensbasis" class="view-nav-button rounded-full px-5 py-2.5 text-sm font-semibold text-black/60 transition hover:text-graphite dark:text-white/60 dark:hover:text-white">Wissensbasis &amp; Typen</button>
+        <button type="button" data-view="system" class="view-nav-button rounded-full px-5 py-2.5 text-sm font-semibold text-black/60 transition hover:text-graphite dark:text-white/60 dark:hover:text-white">System</button>
+        <button type="button" data-view="config-ai" class="view-nav-button rounded-full px-5 py-2.5 text-sm font-semibold text-black/60 transition hover:text-graphite dark:text-white/60 dark:hover:text-white">Config-AI</button>
+      </nav>
 
-            <div class="mt-6 grid gap-6">
-              <section class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
-                <div>
-                  <h3 class="font-display text-xl font-semibold">RAGfind</h3>
-                  <p class="mt-2 text-sm text-black/65 dark:text-white/60">Legt fest, welche Wissensdatenbanken die separate Suchoberflaeche auf Port 3312 durchsuchen darf. Mehrfachauswahl ist moeglich.</p>
-                </div>
-                <form id="ragfind-settings-form" class="mt-5 grid gap-4">
-                  <div id="ragfind-knowledge-base-options" class="grid gap-3 md:grid-cols-2"></div>
-                  <div class="flex items-center justify-between gap-3">
-                    <div id="ragfind-settings-summary" class="text-sm text-black/55 dark:text-white/55">Lade RAGfind-Konfiguration ...</div>
-                    <button class="rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">RAGfind speichern</button>
-                  </div>
-                </form>
-              </section>
+      <div data-view-panel="uebersicht" class="view-panel">
+        <section class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4" id="stats"></section>
 
-              <section class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
-                <div>
-                  <h3 class="font-display text-xl font-semibold">Dokumenttypen</h3>
-                  <p class="mt-2 text-sm text-black/65 dark:text-white/60">Zentrale Typ-Definitionen fuer Heuristik, LLM-Klassifizierung und typspezifische Suchprofile. Labels, Prioritaeten, Hint-Listen und Retrieval-Optionen koennen hier pro Typ angepasst werden.</p>
-                </div>
-                <div id="document-type-settings" class="mt-5 grid gap-4 xl:grid-cols-2"></div>
-              </section>
+        <section id="embedding-progress-panel" class="mt-6 hidden rounded-[1.5rem] border border-white/50 bg-white/70 p-5 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 class="font-display text-lg font-semibold">Embedding-Fortschritt</h2>
+              <p class="text-sm text-slate-600 dark:text-slate-300">Chunks werden asynchron im Hintergrund eingebettet - die Suche funktioniert bereits währenddessen über Volltext/Trigram.</p>
             </div>
+            <div id="embedding-progress-summary" class="text-sm font-semibold text-graphite dark:text-lagoon"></div>
           </div>
-        </div>
+          <div class="mt-3 h-3 w-full overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+            <div id="embedding-progress-bar" class="h-full rounded-full bg-lagoon transition-all duration-500 dark:bg-aurora" style="width: 0%"></div>
+          </div>
+          <div id="embedding-progress-failed" class="mt-2 hidden text-sm font-semibold text-rose-600 dark:text-rose-300"></div>
+        </section>
       </div>
 
-      <div id="admin-access-modal" class="fixed inset-0 z-50 hidden overflow-y-auto bg-graphite/45 px-4 py-8 backdrop-blur-sm">
-        <div class="mx-auto max-w-4xl">
-          <div class="max-h-[calc(100vh-4rem)] overflow-y-auto rounded-[1.75rem] border border-white/50 bg-white/90 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-dusk/95">
-            <div class="flex items-start justify-between gap-4">
-              <div>
-                <h2 class="font-display text-2xl font-semibold">Admin-Zugang</h2>
-                <p class="mt-2 text-sm text-black/65 dark:text-white/60">Passwort &auml;ndern und weitere Login-Benutzer f&uuml;r die Operator-Konsole anlegen.</p>
-              </div>
-              <button id="admin-access-close" type="button" class="rounded-full border border-black/10 bg-white/70 px-3 py-2 text-sm font-semibold transition hover:border-lagoon dark:border-white/10 dark:bg-white/10">Schliessen</button>
-            </div>
-
-            <div class="mt-6 grid gap-6 xl:grid-cols-2">
-              <section class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
-                <h3 class="font-display text-xl font-semibold">Passwort &auml;ndern</h3>
-                <p class="mt-2 text-sm text-black/65 dark:text-white/60">Default-Login ist initial <strong>admin</strong> / <strong>admin</strong>. Nach einer &Auml;nderung fordert der Browser bei der n&auml;chsten Anfrage das neue Passwort an.</p>
-                <form id="admin-password-form" class="mt-5 grid gap-3">
-                  <input name="currentPassword" type="password" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Aktuelles Passwort" required />
-                  <input name="newPassword" type="password" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Neues Passwort" required />
-                  <input name="confirmPassword" type="password" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Neues Passwort bestaetigen" required />
-                  <button class="rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Passwort speichern</button>
-                </form>
-              </section>
-
-              <section class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
-                <h3 class="font-display text-xl font-semibold">Zusatzbenutzer anlegen</h3>
-                <p class="mt-2 text-sm text-black/65 dark:text-white/60">Neue Benutzer koennen sich danach ebenfalls per Basic Auth an der Konsole anmelden.</p>
-                <form id="admin-user-form" class="mt-5 grid gap-3">
-                  <input name="username" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Benutzername, z. B. ops-team" required />
-                  <input name="password" type="password" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Startpasswort" required />
-                  <input name="confirmPassword" type="password" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Startpasswort bestaetigen" required />
-                  <button class="rounded-full bg-lagoon/90 px-5 py-3 text-sm font-semibold text-graphite transition hover:opacity-90">Benutzer anlegen</button>
-                </form>
-                <div id="admin-users" class="mt-5 space-y-3"></div>
-              </section>
-
-              <section class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5 xl:col-span-2">
-                <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div>
-                    <h3 class="font-display text-xl font-semibold">Elasticsearch-Operationen</h3>
-                    <p class="mt-2 text-sm text-black/65 dark:text-white/60">Zeigt den Betriebszustand der optionalen Suchschicht und startet bei Bedarf einen manuellen Reindex aus PostgreSQL.</p>
-                  </div>
-                  <button id="elasticsearch-reindex" type="button" class="rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Reindex starten</button>
-                </div>
-                <div id="elasticsearch-admin-status" class="mt-5 grid gap-3 md:grid-cols-3"></div>
-              </section>
-
-              <section class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5 xl:col-span-2">
-                <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div>
-                    <h3 class="font-display text-xl font-semibold">Dokumentenklassifizierung</h3>
-                    <p class="mt-2 text-sm text-black/65 dark:text-white/60">Backfillt bestehende Dokumente mit der Ollama-basierten Klassifizierung und schreibt den Dokumenttyp in die Metadaten.</p>
-                  </div>
-                  <button id="classification-reindex" type="button" class="rounded-full bg-ember px-5 py-3 text-sm font-semibold text-white transition hover:opacity-90">Klassifizierung backfillen</button>
-                </div>
-                <div id="classification-admin-status" class="mt-5 grid gap-3 md:grid-cols-3"></div>
-              </section>
-
-              <section class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5 xl:col-span-2">
-                <div>
-                  <h3 class="font-display text-xl font-semibold">Git-Repository-Import</h3>
-                  <p class="mt-2 text-sm text-black/65 dark:text-white/60">Zeigt Cache-Verzeichnis, Dateilimit und den letzten bekannten Stand der Git-Import-Jobs.</p>
-                </div>
-                <div id="git-import-admin-status" class="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4"></div>
-              </section>
+      <div data-view-panel="ingestion" class="view-panel hidden">
+        <section class="mt-6 rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 class="font-display text-2xl font-semibold">Ingestion-Werkbank</h2>
+              <p class="mt-2 text-sm text-black/65 dark:text-white/60">Startet Crawl-, Upload-, Sync- und Zeitplan-Jobs ohne die API manuell anzusprechen.</p>
             </div>
           </div>
-        </div>
-      </div>
-
-      <section class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4" id="stats"></section>
-
-      <section class="mt-6 grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-        <div class="min-w-0 space-y-6">
-          <section class="rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
-            <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <h2 class="font-display text-2xl font-semibold">Ingestion-Werkbank</h2>
-                <p class="mt-2 text-sm text-black/65 dark:text-white/60">Startet Crawl-, Upload-, Sync- und Zeitplan-Jobs ohne die API manuell anzusprechen.</p>
-              </div>
-            </div>
-            <div class="mt-5 grid gap-5 lg:grid-cols-2">
-              <form id="crawl-form" class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
-                <h3 class="font-display text-xl font-semibold">Crawl starten</h3>
-                <label class="mt-4 block text-sm font-medium">Start-URL</label>
-                <input name="startUrl" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="https://example.org/docs" required />
-                <label class="mt-4 block text-sm font-medium">Maximale Tiefe</label>
-                <input name="maxDepth" type="number" min="0" value="2" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" />
-                <label class="mt-4 block text-sm font-medium">Wissensdatenbank</label>
-                <select name="knowledgeBaseId" data-knowledge-base-select class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
-                <button class="mt-5 rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Crawl enqueue</button>
-              </form>
-
-              <form id="upload-form" class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
-                <h3 class="font-display text-xl font-semibold">Datei hochladen</h3>
-                <p class="mt-2 text-sm text-black/65 dark:text-white/60">Ideal f&uuml;r PDFs, Handbuecher, Protokolle und technische Dokus.</p>
-                <input name="file" type="file" class="mt-6 block w-full text-sm" required />
-                <label class="mt-4 block text-sm font-medium">Wissensdatenbank</label>
-                <select name="knowledgeBaseId" data-knowledge-base-select class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
-                <button class="mt-5 rounded-full bg-ember px-5 py-3 text-sm font-semibold text-white transition hover:opacity-90">Upload enqueue</button>
-              </form>
-
-              <form id="sync-form" class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
-                <h3 class="font-display text-xl font-semibold">Verzeichnis-Sync</h3>
-                <label class="mt-4 block text-sm font-medium">Root-Verzeichnis</label>
-                <input name="rootDir" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="/app/import-dir" />
-                <label class="mt-4 block text-sm font-medium">Wissensdatenbank</label>
-                <select name="knowledgeBaseId" data-knowledge-base-select class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
-                <button class="mt-5 rounded-full bg-lagoon/90 px-5 py-3 text-sm font-semibold text-graphite transition hover:opacity-90">Sync enqueue</button>
-              </form>
-
-              <form id="schedule-form" class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
-                <h3 class="font-display text-xl font-semibold">Zeitplan anlegen</h3>
-                <div class="mt-4 grid gap-3">
-                  <select name="jobType" class="rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">
-                    <option value="sync">Sync</option>
-                    <option value="crawl">Crawl</option>
-                    <option value="git-sync">Git Repo</option>
-                  </select>
-                  <input name="cronExpression" class="rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="*/30 * * * *" required />
-                  <textarea name="payload" rows="4" class="rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder='{"startUrl":"https://example.org","maxDepth":2}'></textarea>
-                </div>
-                <button class="mt-5 rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Schedule speichern</button>
-              </form>
-
-              <form id="git-form" class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
-                <h3 class="font-display text-xl font-semibold">Git-Repository ingesten</h3>
-                <p class="mt-2 text-sm text-black/65 dark:text-white/60">Clont ein Repository, liest text- und codeartige Dateien ein und ordnet alles einer Wissensdatenbank zu.</p>
-                <label class="mt-4 block text-sm font-medium">Repository-URL</label>
-                <input name="repositoryUrl" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="https://github.com/org/repo.git" required />
-                <div class="mt-4 grid gap-3 lg:grid-cols-2">
-                  <div>
-                    <label class="block text-sm font-medium">Branch</label>
-                    <input name="branch" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="main" />
-                  </div>
-                  <div>
-                    <label class="block text-sm font-medium">Subpfad</label>
-                    <input name="subPath" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="docs oder src" />
-                  </div>
-                </div>
-                <label class="mt-4 block text-sm font-medium">Wissensdatenbank</label>
-                <select name="knowledgeBaseId" data-knowledge-base-select class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
-                <button class="mt-5 rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Git-Import enqueue</button>
-              </form>
-            </div>
-          </section>
-
-          <section class="rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
-            <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-              <div>
-                <h2 class="font-display text-2xl font-semibold">Datenbank und Dokumente</h2>
-                <p class="mt-2 text-sm text-black/65 dark:text-white/60">Such- und Verwaltungsansicht f&uuml;r den aktuellen Dokumentbestand, inklusive Loeschen und direktem Preview-Sprung.</p>
-              </div>
-              <div id="documents-summary" class="rounded-full bg-black/5 px-4 py-2 text-sm font-semibold text-black/70 dark:bg-white/10 dark:text-white/70">Keine Dokumente geladen</div>
-            </div>
-            <form id="document-filters-form" class="mt-5 space-y-3">
-              <div>
-                <label for="document-query" class="mb-2 block text-sm font-medium text-black/65 dark:text-white/60">Suche</label>
-                <input id="document-query" name="query" class="min-w-0 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Suche nach Titel, Dateiname oder Source-Ref" />
-              </div>
-              <div class="grid gap-3 lg:grid-cols-3">
-                <div>
-                  <label for="document-category" class="mb-2 block text-sm font-medium text-black/65 dark:text-white/60">Kategorie</label>
-                  <select id="document-category" name="category" data-category-select class="min-w-0 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">
-                    <option value="">Alle Kategorien</option>
-                  </select>
-                </div>
-                <div>
-                  <label for="document-type" class="mb-2 block text-sm font-medium text-black/65 dark:text-white/60">Dokumenttyp</label>
-                  <select id="document-type" name="documentType" data-document-type-select class="min-w-0 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">
-                    <option value="">Alle Typen</option>
-                  </select>
-                </div>
-                <div>
-                  <label for="document-source-type" class="mb-2 block text-sm font-medium text-black/65 dark:text-white/60">Source</label>
-                  <select id="document-source-type" name="sourceType" data-source-type-select class="min-w-0 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">
-                    <option value="">Alle Quellen</option>
-                  </select>
-                </div>
-              </div>
-              <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div class="flex items-center gap-3 sm:max-w-[220px] sm:flex-1">
-                  <label for="document-limit" class="shrink-0 text-sm font-medium text-black/65 dark:text-white/60">Limit</label>
-                  <input id="document-limit" name="limit" type="number" min="1" max="200" value="25" class="min-w-0 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" />
-                </div>
-                <div class="flex flex-col gap-3 sm:flex-row">
-                  <button class="rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Filtern</button>
-                  <button id="document-admin-reset" type="button" class="rounded-full border border-black/10 bg-white/70 px-5 py-3 text-sm font-semibold transition hover:border-lagoon dark:border-white/10 dark:bg-white/10">Reset</button>
-                </div>
-              </div>
+          <div class="mt-5 grid gap-5 lg:grid-cols-2">
+            <form id="crawl-form" class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
+              <h3 class="font-display text-xl font-semibold">Crawl starten</h3>
+              <label class="mt-4 block text-sm font-medium">Start-URL</label>
+              <input name="startUrl" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="https://example.org/docs" required />
+              <label class="mt-4 block text-sm font-medium">Maximale Tiefe</label>
+              <input name="maxDepth" type="number" min="0" value="2" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" />
+              <label class="mt-4 block text-sm font-medium">Wissensdatenbank</label>
+              <select name="knowledgeBaseId" data-knowledge-base-select class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
+              <button class="mt-5 rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Crawl enqueue</button>
             </form>
-            <div class="mt-5 overflow-hidden rounded-[1.5rem] border border-black/5 bg-white/55 dark:border-white/10 dark:bg-black/15">
-              <div class="grid grid-cols-[88px_minmax(0,1.6fr)_minmax(0,0.8fr)_120px] gap-3 border-b border-black/5 px-4 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-black/55 dark:border-white/10 dark:text-white/45">
-                <div>ID</div>
-                <div>Dokument</div>
-                <div>Typ</div>
-                <div>Aktionen</div>
+
+            <form id="upload-form" class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
+              <h3 class="font-display text-xl font-semibold">Datei hochladen</h3>
+              <p class="mt-2 text-sm text-black/65 dark:text-white/60">Ideal f&uuml;r PDFs, Handbuecher, Protokolle und technische Dokus.</p>
+              <input name="file" type="file" class="mt-6 block w-full text-sm" required />
+              <label class="mt-4 block text-sm font-medium">Wissensdatenbank</label>
+              <select name="knowledgeBaseId" data-knowledge-base-select class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
+              <button class="mt-5 rounded-full bg-ember px-5 py-3 text-sm font-semibold text-white transition hover:opacity-90">Upload enqueue</button>
+            </form>
+
+            <form id="sync-form" class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
+              <h3 class="font-display text-xl font-semibold">Verzeichnis-Sync</h3>
+              <label class="mt-4 block text-sm font-medium">Root-Verzeichnis</label>
+              <input name="rootDir" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="/app/import-dir" />
+              <label class="mt-4 block text-sm font-medium">Wissensdatenbank</label>
+              <select name="knowledgeBaseId" data-knowledge-base-select class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
+              <button class="mt-5 rounded-full bg-lagoon/90 px-5 py-3 text-sm font-semibold text-graphite transition hover:opacity-90">Sync enqueue</button>
+            </form>
+
+            <form id="schedule-form" class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
+              <h3 class="font-display text-xl font-semibold">Zeitplan anlegen</h3>
+              <div class="mt-4 grid gap-3">
+                <select name="jobType" class="rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">
+                  <option value="sync">Sync</option>
+                  <option value="crawl">Crawl</option>
+                  <option value="git-sync">Git Repo</option>
+                </select>
+                <input name="cronExpression" class="rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="*/30 * * * *" required />
+                <textarea name="payload" rows="4" class="rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder='{"startUrl":"https://example.org","maxDepth":2}'></textarea>
               </div>
-              <div id="documents" class="divide-y divide-black/5 dark:divide-white/10"></div>
-            </div>
-            <div id="documents-pagination" class="mt-4"></div>
-          </section>
-        </div>
+              <button class="mt-5 rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Schedule speichern</button>
+            </form>
 
-        <div class="space-y-6">
-          <section class="rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
-            <h2 class="font-display text-2xl font-semibold">Laufzeitkonfiguration</h2>
-            <dl id="config" class="mt-4 space-y-3 text-sm"></dl>
-          </section>
+            <form id="git-form" class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
+              <h3 class="font-display text-xl font-semibold">Git-Repository ingesten</h3>
+              <p class="mt-2 text-sm text-black/65 dark:text-white/60">Clont ein Repository, liest text- und codeartige Dateien ein und ordnet alles einer Wissensdatenbank zu.</p>
+              <label class="mt-4 block text-sm font-medium">Repository-URL</label>
+              <input name="repositoryUrl" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="https://github.com/org/repo.git" required />
+              <div class="mt-4 grid gap-3 lg:grid-cols-2">
+                <div>
+                  <label class="block text-sm font-medium">Branch</label>
+                  <input name="branch" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="main" />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium">Subpfad</label>
+                  <input name="subPath" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="docs oder src" />
+                </div>
+              </div>
+              <label class="mt-4 block text-sm font-medium">Wissensdatenbank</label>
+              <select name="knowledgeBaseId" data-knowledge-base-select class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
+              <button class="mt-5 rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Git-Import enqueue</button>
+            </form>
+          </div>
+        </section>
 
+        <section class="mt-6 grid gap-6 xl:grid-cols-2">
           <section class="rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
             <h2 class="font-display text-2xl font-semibold">Queue-Jobs</h2>
             <div id="jobs" class="mt-4 space-y-3 text-sm"></div>
@@ -341,116 +201,324 @@
             <h2 class="font-display text-2xl font-semibold">Schedules</h2>
             <div id="schedules" class="mt-4 space-y-3 text-sm"></div>
           </section>
-        </div>
-      </section>
-
-      <section class="mt-6 grid gap-6 xl:grid-cols-2">
-        <section class="rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
-          <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <h2 class="font-display text-2xl font-semibold">Wissensdatenbanken</h2>
-              <p class="mt-2 text-sm text-black/65 dark:text-white/60">Anlegen, bearbeiten und loeschen von Knowledge Bases f&uuml;r getrennte Wissensr&auml;ume.</p>
-            </div>
-            <button id="knowledge-base-reset" type="button" class="rounded-full border border-black/10 bg-white/70 px-4 py-2 text-sm font-semibold transition hover:border-lagoon dark:border-white/10 dark:bg-white/10">Formular leeren</button>
-          </div>
-          <form id="knowledge-base-form" class="mt-5 grid gap-3 lg:grid-cols-2">
-            <input name="name" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Name der Wissensdatenbank" required />
-            <input name="slug" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Slug, z. B. kb-code" />
-            <textarea name="description" rows="3" class="lg:col-span-2 rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Kurzbeschreibung oder Mandantenkontext"></textarea>
-            <label class="inline-flex items-center gap-3 text-sm font-medium text-black/65 dark:text-white/60">
-              <input name="isEnabled" type="checkbox" class="h-4 w-4 rounded border-black/20 text-ember focus:ring-ember" checked />
-              Aktiv
-            </label>
-            <button class="rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Wissensdatenbank speichern</button>
-          </form>
-          <div id="knowledge-bases" class="mt-5 space-y-3"></div>
         </section>
+      </div>
 
-        <section class="rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
-          <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <h2 class="font-display text-2xl font-semibold">MCP-Zug&auml;nge</h2>
-              <p class="mt-2 text-sm text-black/65 dark:text-white/60">Service-Zug&auml;nge f&uuml;r MCP anlegen, bearbeiten, loeschen und auf Wissensdatenbanken berechtigen.</p>
-            </div>
-            <button id="mcp-principal-reset" type="button" class="rounded-full border border-black/10 bg-white/70 px-4 py-2 text-sm font-semibold transition hover:border-lagoon dark:border-white/10 dark:bg-white/10">Formular leeren</button>
-          </div>
-          <form id="mcp-principal-form" class="mt-5 space-y-3">
-            <div class="grid gap-3 lg:grid-cols-2">
-              <input name="name" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Name des MCP-Zugangs" required />
-              <label class="inline-flex items-center gap-3 rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 text-sm font-medium text-black/65 dark:border-white/10 dark:bg-dusk/80 dark:text-white/60">
-                <input name="isEnabled" type="checkbox" class="h-4 w-4 rounded border-black/20 text-ember focus:ring-ember" checked />
-                Zugang aktiv
-              </label>
-            </div>
-            <textarea name="description" rows="3" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Beschreibung oder Zuordnung f&uuml;r Team, Gruppe oder Integration"></textarea>
-            <div>
-              <div class="mb-2 text-sm font-medium text-black/65 dark:text-white/60">Berechtigte Wissensdatenbanken</div>
-              <div id="principal-knowledge-base-options" class="grid gap-2 md:grid-cols-2"></div>
-            </div>
-            <button class="rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">MCP-Zugang speichern</button>
-          </form>
-          <pre id="mcp-token-output" class="mt-4 hidden overflow-auto rounded-3xl bg-graphite p-4 text-xs text-cloud dark:bg-black/50"></pre>
-          <div id="mcp-principals" class="mt-5 space-y-3"></div>
-        </section>
-      </section>
-
-      <section class="mt-6 grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-        <section class="rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
+      <div data-view-panel="dokumente" class="view-panel hidden">
+        <section class="mt-6 rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
           <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <h2 class="font-display text-2xl font-semibold">Dokument-Preview</h2>
-              <p class="mt-2 text-sm text-black/65 dark:text-white/60">Volltext, Struktur, Originaldokument und schnelle Analysepfade f&uuml;r das aktuell ausgew&auml;hlte Dokument.</p>
+              <h2 class="font-display text-2xl font-semibold">Datenbank und Dokumente</h2>
+              <p class="mt-2 text-sm text-black/65 dark:text-white/60">Such- und Verwaltungsansicht f&uuml;r den aktuellen Dokumentbestand, inklusive Loeschen und direktem Preview-Sprung.</p>
             </div>
-            <form id="document-preview-form" class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
-              <input name="documentId" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Dokument-ID eingeben oder links auswaehlen" />
-              <button class="rounded-full bg-lagoon/90 px-5 py-3 text-sm font-semibold text-graphite transition hover:opacity-90">Preview laden</button>
-            </form>
+            <div id="documents-summary" class="rounded-full bg-black/5 px-4 py-2 text-sm font-semibold text-black/70 dark:bg-white/10 dark:text-white/70">Keine Dokumente geladen</div>
           </div>
-          <div id="document-preview" class="mt-5 grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
-            <div class="rounded-3xl border border-black/5 bg-cloud/60 p-5 text-sm text-black/60 dark:border-white/10 dark:bg-dusk/70 dark:text-white/60">Noch kein Dokument ausgew&auml;hlt.</div>
-          </div>
-        </section>
-
-        <section class="rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
-          <div class="flex flex-col gap-3">
+          <form id="document-filters-form" class="mt-5 space-y-3">
             <div>
-              <h2 class="font-display text-2xl font-semibold">Analyse-Werkbank</h2>
-              <p class="mt-2 text-sm text-black/65 dark:text-white/60">Schnellzugriff auf Summary, Requirements, Risks, Entities sowie die erweiterten Code-Doku-Pfade f&uuml;r Setup, Config, API und Betriebshinweise.</p>
+              <label for="document-query" class="mb-2 block text-sm font-medium text-black/65 dark:text-white/60">Suche</label>
+              <input id="document-query" name="query" class="min-w-0 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Suche nach Titel, Dateiname oder Source-Ref" />
             </div>
-            <div id="document-analysis-controls" class="flex flex-wrap gap-2">
-              <button data-analysis="summary" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Summary</button>
-              <button data-analysis="actions" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Actions</button>
-              <button data-analysis="decisions" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Decisions</button>
-              <button data-analysis="deadlines" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Deadlines</button>
-              <button data-analysis="requirements" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Requirements</button>
-              <button data-analysis="config-keys" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Config Keys</button>
-              <button data-analysis="setup-steps" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Setup Steps</button>
-              <button data-analysis="api-surface" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>API Surface</button>
-              <button data-analysis="operational-notes" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Ops Notes</button>
-              <button data-analysis="risks" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Risks</button>
-              <button data-analysis="entities" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Entities</button>
+            <div class="grid gap-3 lg:grid-cols-3">
+              <div>
+                <label for="document-category" class="mb-2 block text-sm font-medium text-black/65 dark:text-white/60">Kategorie</label>
+                <select id="document-category" name="category" data-category-select class="min-w-0 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">
+                  <option value="">Alle Kategorien</option>
+                </select>
+              </div>
+              <div>
+                <label for="document-type" class="mb-2 block text-sm font-medium text-black/65 dark:text-white/60">Dokumenttyp</label>
+                <select id="document-type" name="documentType" data-document-type-select class="min-w-0 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">
+                  <option value="">Alle Typen</option>
+                </select>
+              </div>
+              <div>
+                <label for="document-source-type" class="mb-2 block text-sm font-medium text-black/65 dark:text-white/60">Source</label>
+                <select id="document-source-type" name="sourceType" data-source-type-select class="min-w-0 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">
+                  <option value="">Alle Quellen</option>
+                </select>
+              </div>
             </div>
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div class="flex items-center gap-3 sm:max-w-[220px] sm:flex-1">
+                <label for="document-limit" class="shrink-0 text-sm font-medium text-black/65 dark:text-white/60">Limit</label>
+                <input id="document-limit" name="limit" type="number" min="1" max="200" value="25" class="min-w-0 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" />
+              </div>
+              <div class="flex flex-col gap-3 sm:flex-row">
+                <button class="rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Filtern</button>
+                <button id="document-admin-reset" type="button" class="rounded-full border border-black/10 bg-white/70 px-5 py-3 text-sm font-semibold transition hover:border-lagoon dark:border-white/10 dark:bg-white/10">Reset</button>
+              </div>
+            </div>
+          </form>
+          <div class="mt-5 overflow-hidden rounded-[1.5rem] border border-black/5 bg-white/55 dark:border-white/10 dark:bg-black/15">
+            <div class="grid grid-cols-[88px_minmax(0,1.6fr)_minmax(0,0.8fr)_120px] gap-3 border-b border-black/5 px-4 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-black/55 dark:border-white/10 dark:text-white/45">
+              <div>ID</div>
+              <div>Dokument</div>
+              <div>Typ</div>
+              <div>Aktionen</div>
+            </div>
+            <div id="documents" class="divide-y divide-black/5 dark:divide-white/10"></div>
           </div>
-          <div id="document-analysis" class="mt-5 rounded-3xl border border-black/5 bg-cloud/60 p-5 text-sm text-black/60 dark:border-white/10 dark:bg-dusk/70 dark:text-white/60">Bitte zuerst ein Dokument ausw&auml;hlen.</div>
+          <div id="documents-pagination" class="mt-4"></div>
         </section>
-      </section>
 
-      <section class="mt-6 rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
-        <h2 class="font-display text-2xl font-semibold">RAG Query-Test</h2>
-        <form id="query-form" class="mt-4 grid gap-4 xl:grid-cols-[1fr_auto]">
-          <div class="grid gap-3 xl:grid-cols-[minmax(0,1fr)_220px_220px]">
-            <input name="query" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Welche ENV-Variablen und Setup-Schritte beschreibt die Doku?" required />
-            <select name="category" data-category-select class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">
-              <option value="">Alle Kategorien</option>
-            </select>
-            <select name="documentType" data-document-type-select class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">
-              <option value="">Alle Typen</option>
-            </select>
+        <section class="mt-6 grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+          <section class="rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
+            <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <h2 class="font-display text-2xl font-semibold">Dokument-Preview</h2>
+                <p class="mt-2 text-sm text-black/65 dark:text-white/60">Volltext, Struktur, Originaldokument und schnelle Analysepfade f&uuml;r das aktuell ausgew&auml;hlte Dokument.</p>
+              </div>
+              <form id="document-preview-form" class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                <input name="documentId" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Dokument-ID eingeben oder links auswaehlen" />
+                <button class="rounded-full bg-lagoon/90 px-5 py-3 text-sm font-semibold text-graphite transition hover:opacity-90">Preview laden</button>
+              </form>
+            </div>
+            <div id="document-preview" class="mt-5 grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
+              <div class="rounded-3xl border border-black/5 bg-cloud/60 p-5 text-sm text-black/60 dark:border-white/10 dark:bg-dusk/70 dark:text-white/60">Noch kein Dokument ausgew&auml;hlt.</div>
+            </div>
+          </section>
+
+          <section class="rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
+            <div class="flex flex-col gap-3">
+              <div>
+                <h2 class="font-display text-2xl font-semibold">Analyse-Werkbank</h2>
+                <p class="mt-2 text-sm text-black/65 dark:text-white/60">Schnellzugriff auf Summary, Requirements, Risks, Entities sowie die erweiterten Code-Doku-Pfade f&uuml;r Setup, Config, API und Betriebshinweise.</p>
+              </div>
+              <div id="document-analysis-controls" class="flex flex-wrap gap-2">
+                <button data-analysis="summary" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Summary</button>
+                <button data-analysis="actions" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Actions</button>
+                <button data-analysis="decisions" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Decisions</button>
+                <button data-analysis="deadlines" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Deadlines</button>
+                <button data-analysis="requirements" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Requirements</button>
+                <button data-analysis="config-keys" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Config Keys</button>
+                <button data-analysis="setup-steps" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Setup Steps</button>
+                <button data-analysis="api-surface" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>API Surface</button>
+                <button data-analysis="operational-notes" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Ops Notes</button>
+                <button data-analysis="risks" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Risks</button>
+                <button data-analysis="entities" type="button" class="analysis-button rounded-full border border-black/10 px-4 py-2 text-xs font-semibold dark:border-white/10" disabled>Entities</button>
+              </div>
+            </div>
+            <div id="document-analysis" class="mt-5 rounded-3xl border border-black/5 bg-cloud/60 p-5 text-sm text-black/60 dark:border-white/10 dark:bg-dusk/70 dark:text-white/60">Bitte zuerst ein Dokument ausw&auml;hlen.</div>
+          </section>
+        </section>
+      </div>
+
+      <div data-view-panel="suche" class="view-panel hidden">
+        <section class="mt-6 rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
+          <h2 class="font-display text-2xl font-semibold">RAG Query-Test</h2>
+          <form id="query-form" class="mt-4 grid gap-4 xl:grid-cols-[1fr_auto]">
+            <div class="grid gap-3 xl:grid-cols-[minmax(0,1fr)_220px_220px]">
+              <input name="query" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Welche ENV-Variablen und Setup-Schritte beschreibt die Doku?" required />
+              <select name="category" data-category-select class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">
+                <option value="">Alle Kategorien</option>
+              </select>
+              <select name="documentType" data-document-type-select class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">
+                <option value="">Alle Typen</option>
+              </select>
+            </div>
+            <button class="rounded-full bg-graphite px-6 py-3 text-sm font-semibold text-white transition hover:bg-ember">Smart Search</button>
+          </form>
+          <pre id="query-result" class="mt-4 overflow-auto rounded-3xl bg-graphite p-4 text-xs text-cloud dark:bg-black/50">Noch keine Anfrage.</pre>
+        </section>
+
+        <section class="mt-6 rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
+          <div>
+            <h3 class="font-display text-xl font-semibold">RAGfind</h3>
+            <p class="mt-2 text-sm text-black/65 dark:text-white/60">Legt fest, welche Wissensdatenbanken die separate Suchoberflaeche auf Port 3312 durchsuchen darf. Mehrfachauswahl ist moeglich.</p>
           </div>
-          <button class="rounded-full bg-graphite px-6 py-3 text-sm font-semibold text-white transition hover:bg-ember">Smart Search</button>
-        </form>
-        <pre id="query-result" class="mt-4 overflow-auto rounded-3xl bg-graphite p-4 text-xs text-cloud dark:bg-black/50">Noch keine Anfrage.</pre>
-      </section>
+          <form id="ragfind-settings-form" class="mt-5 grid gap-4">
+            <div id="ragfind-knowledge-base-options" class="grid gap-3 md:grid-cols-2"></div>
+            <div class="flex items-center justify-between gap-3">
+              <div id="ragfind-settings-summary" class="text-sm text-black/55 dark:text-white/55">Lade RAGfind-Konfiguration ...</div>
+              <button class="rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">RAGfind speichern</button>
+            </div>
+          </form>
+        </section>
+      </div>
+
+      <div data-view-panel="wissensbasis" class="view-panel hidden">
+        <section class="mt-6 grid gap-6 xl:grid-cols-2">
+          <section class="rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h2 class="font-display text-2xl font-semibold">Wissensdatenbanken</h2>
+                <p class="mt-2 text-sm text-black/65 dark:text-white/60">Anlegen, bearbeiten und loeschen von Knowledge Bases f&uuml;r getrennte Wissensr&auml;ume.</p>
+              </div>
+              <button id="knowledge-base-reset" type="button" class="rounded-full border border-black/10 bg-white/70 px-4 py-2 text-sm font-semibold transition hover:border-lagoon dark:border-white/10 dark:bg-white/10">Formular leeren</button>
+            </div>
+            <form id="knowledge-base-form" class="mt-5 grid gap-3 lg:grid-cols-2">
+              <input name="name" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Name der Wissensdatenbank" required />
+              <input name="slug" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Slug, z. B. kb-code" />
+              <textarea name="description" rows="3" class="lg:col-span-2 rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Kurzbeschreibung oder Mandantenkontext"></textarea>
+              <label class="inline-flex items-center gap-3 text-sm font-medium text-black/65 dark:text-white/60">
+                <input name="isEnabled" type="checkbox" class="h-4 w-4 rounded border-black/20 text-ember focus:ring-ember" checked />
+                Aktiv
+              </label>
+              <button class="rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Wissensdatenbank speichern</button>
+            </form>
+            <div id="knowledge-bases" class="mt-5 space-y-3"></div>
+          </section>
+
+          <section class="rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h2 class="font-display text-2xl font-semibold">MCP-Zug&auml;nge</h2>
+                <p class="mt-2 text-sm text-black/65 dark:text-white/60">Service-Zug&auml;nge f&uuml;r MCP anlegen, bearbeiten, loeschen und auf Wissensdatenbanken berechtigen.</p>
+              </div>
+              <button id="mcp-principal-reset" type="button" class="rounded-full border border-black/10 bg-white/70 px-4 py-2 text-sm font-semibold transition hover:border-lagoon dark:border-white/10 dark:bg-white/10">Formular leeren</button>
+            </div>
+            <form id="mcp-principal-form" class="mt-5 space-y-3">
+              <div class="grid gap-3 lg:grid-cols-2">
+                <input name="name" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Name des MCP-Zugangs" required />
+                <label class="inline-flex items-center gap-3 rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 text-sm font-medium text-black/65 dark:border-white/10 dark:bg-dusk/80 dark:text-white/60">
+                  <input name="isEnabled" type="checkbox" class="h-4 w-4 rounded border-black/20 text-ember focus:ring-ember" checked />
+                  Zugang aktiv
+                </label>
+              </div>
+              <textarea name="description" rows="3" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Beschreibung oder Zuordnung f&uuml;r Team, Gruppe oder Integration"></textarea>
+              <div>
+                <div class="mb-2 text-sm font-medium text-black/65 dark:text-white/60">Berechtigte Wissensdatenbanken</div>
+                <div id="principal-knowledge-base-options" class="grid gap-2 md:grid-cols-2"></div>
+              </div>
+              <button class="rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">MCP-Zugang speichern</button>
+            </form>
+            <pre id="mcp-token-output" class="mt-4 hidden overflow-auto rounded-3xl bg-graphite p-4 text-xs text-cloud dark:bg-black/50"></pre>
+            <div id="mcp-principals" class="mt-5 space-y-3"></div>
+          </section>
+        </section>
+
+        <section class="mt-6 rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
+          <div>
+            <h3 class="font-display text-xl font-semibold">Dokumenttypen</h3>
+            <p class="mt-2 text-sm text-black/65 dark:text-white/60">Zentrale Typ-Definitionen fuer Heuristik, LLM-Klassifizierung, typspezifische Suchprofile und Chunk-Parameter. Labels, Prioritaeten, Hint-Listen, Retrieval-Optionen und Chunk-Groesse/Overlap koennen hier pro Typ angepasst werden.</p>
+          </div>
+          <div id="document-type-settings" class="mt-5 grid gap-4 xl:grid-cols-2"></div>
+        </section>
+
+        <section class="mt-6 rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
+          <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h3 class="font-display text-xl font-semibold">Dokumentenklassifizierung</h3>
+              <p class="mt-2 text-sm text-black/65 dark:text-white/60">Backfillt bestehende Dokumente mit der Ollama-basierten Klassifizierung und schreibt den Dokumenttyp in die Metadaten.</p>
+            </div>
+            <button id="classification-reindex" type="button" class="rounded-full bg-ember px-5 py-3 text-sm font-semibold text-white transition hover:opacity-90">Klassifizierung backfillen</button>
+          </div>
+          <div id="classification-admin-status" class="mt-5 grid gap-3 md:grid-cols-3"></div>
+        </section>
+      </div>
+
+      <div data-view-panel="system" class="view-panel hidden">
+        <section class="mt-6 rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
+          <h2 class="font-display text-2xl font-semibold">Laufzeitkonfiguration</h2>
+          <dl id="config" class="mt-4 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-3"></dl>
+        </section>
+
+        <section class="mt-6 grid gap-6 xl:grid-cols-2">
+          <section class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
+            <h3 class="font-display text-xl font-semibold">Passwort &auml;ndern</h3>
+            <p class="mt-2 text-sm text-black/65 dark:text-white/60">Default-Login ist initial <strong>admin</strong> / <strong>admin</strong>. Nach einer &Auml;nderung fordert der Browser bei der n&auml;chsten Anfrage das neue Passwort an.</p>
+            <form id="admin-password-form" class="mt-5 grid gap-3">
+              <input name="currentPassword" type="password" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Aktuelles Passwort" required />
+              <input name="newPassword" type="password" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Neues Passwort" required />
+              <input name="confirmPassword" type="password" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Neues Passwort bestaetigen" required />
+              <button class="rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Passwort speichern</button>
+            </form>
+          </section>
+
+          <section class="rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
+            <h3 class="font-display text-xl font-semibold">Zusatzbenutzer anlegen</h3>
+            <p class="mt-2 text-sm text-black/65 dark:text-white/60">Neue Benutzer koennen sich danach ebenfalls per Basic Auth an der Konsole anmelden.</p>
+            <form id="admin-user-form" class="mt-5 grid gap-3">
+              <input name="username" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Benutzername, z. B. ops-team" required />
+              <input name="password" type="password" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Startpasswort" required />
+              <input name="confirmPassword" type="password" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Startpasswort bestaetigen" required />
+              <button class="rounded-full bg-lagoon/90 px-5 py-3 text-sm font-semibold text-graphite transition hover:opacity-90">Benutzer anlegen</button>
+            </form>
+            <div id="admin-users" class="mt-5 space-y-3"></div>
+          </section>
+        </section>
+
+        <section class="mt-6 rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
+          <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h3 class="font-display text-xl font-semibold">Elasticsearch-Operationen</h3>
+              <p class="mt-2 text-sm text-black/65 dark:text-white/60">Zeigt den Betriebszustand der optionalen Suchschicht und startet bei Bedarf einen manuellen Reindex aus PostgreSQL.</p>
+            </div>
+            <button id="elasticsearch-reindex" type="button" class="rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Reindex starten</button>
+          </div>
+          <div id="elasticsearch-admin-status" class="mt-5 grid gap-3 md:grid-cols-3"></div>
+        </section>
+
+        <section class="mt-6 rounded-[1.5rem] border border-black/5 bg-white/70 p-5 dark:border-white/10 dark:bg-white/5">
+          <div>
+            <h3 class="font-display text-xl font-semibold">Git-Repository-Import</h3>
+            <p class="mt-2 text-sm text-black/65 dark:text-white/60">Zeigt Cache-Verzeichnis, Dateilimit und den letzten bekannten Stand der Git-Import-Jobs.</p>
+          </div>
+          <div id="git-import-admin-status" class="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4"></div>
+        </section>
+      </div>
+
+      <div data-view-panel="config-ai" class="view-panel hidden">
+        <section class="mt-6 rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
+          <h2 class="font-display text-2xl font-semibold">KI-Provider-Konfiguration</h2>
+          <p class="mt-2 text-sm text-black/65 dark:text-white/60">Legt fest, mit welchem KI-Server (Ollama oder einer OpenAI-kompatiblen API) Embeddings, Zusammenfassungen und Dokumentklassifizierung erzeugt werden. Aenderungen wirken sofort, ohne Neustart.</p>
+
+          <form id="ai-provider-settings-form" class="mt-6 grid gap-4">
+            <div class="grid gap-3 md:grid-cols-2">
+              <label class="block text-sm">
+                <span class="mb-1 block font-semibold text-black/70 dark:text-white/70">Provider</span>
+                <select name="provider" id="ai-provider-select" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">
+                  <option value="ollama">Ollama</option>
+                  <option value="openai">OpenAI-kompatibel</option>
+                </select>
+              </label>
+              <label class="block text-sm">
+                <span class="mb-1 block font-semibold text-black/70 dark:text-white/70">Server-URL</span>
+                <input name="baseUrl" id="ai-provider-base-url" required class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="http://ollama:11434" />
+              </label>
+            </div>
+
+            <label id="ai-provider-api-key-field" class="block text-sm">
+              <span class="mb-1 block font-semibold text-black/70 dark:text-white/70">API-Key</span>
+              <input name="apiKey" id="ai-provider-api-key" type="password" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="sk-..." autocomplete="off" />
+              <span id="ai-provider-api-key-hint" class="mt-1 block text-xs text-black/50 dark:text-white/45"></span>
+            </label>
+
+            <div class="flex flex-wrap items-center gap-3">
+              <button type="button" id="ai-provider-load-models" class="rounded-full bg-lagoon/90 px-5 py-2.5 text-sm font-semibold text-graphite transition hover:opacity-90">Modelle laden</button>
+              <span id="ai-provider-reachability" class="text-sm text-black/55 dark:text-white/55"></span>
+            </div>
+
+            <div class="grid gap-3 md:grid-cols-3">
+              <label class="block text-sm">
+                <span class="mb-1 block font-semibold text-black/70 dark:text-white/70">Embedding-Modell</span>
+                <select name="embeddingModel" id="ai-provider-embedding-model" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
+              </label>
+              <label class="block text-sm">
+                <span class="mb-1 block font-semibold text-black/70 dark:text-white/70">Zusammenfassungs-Modell</span>
+                <select name="summaryModel" id="ai-provider-summary-model" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
+              </label>
+              <label class="block text-sm">
+                <span class="mb-1 block font-semibold text-black/70 dark:text-white/70">Klassifizierungs-Modell</span>
+                <select name="classifierModel" id="ai-provider-classifier-model" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
+              </label>
+            </div>
+
+            <div class="rounded-2xl border border-black/10 bg-cloud/55 px-4 py-3 text-sm text-black/65 dark:border-white/10 dark:bg-dusk/65 dark:text-white/60">
+              Aktuelle Embedding-Dimension: <strong id="ai-provider-embedding-dimension">-</strong>.
+              Ein Wechsel auf ein Modell mit anderer Ausgabedimension erfordert eine manuelle Schema-Migration
+              (<code>ALTER TABLE document_chunks ALTER COLUMN embedding TYPE VECTOR(n)</code>) und ein vollstaendiges
+              Re-Embedding aller Dokumente ueber <code>/admin/embeddings/reembed</code> &mdash; ein solcher Wechsel wird
+              beim Speichern automatisch geprueft und bei Dimensionskonflikt abgelehnt.
+            </div>
+
+            <div class="flex items-center justify-between gap-3">
+              <div id="ai-provider-settings-summary" class="text-sm text-black/55 dark:text-white/55">Lade KI-Provider-Konfiguration ...</div>
+              <button class="rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Konfiguration speichern</button>
+            </div>
+          </form>
+        </section>
+      </div>
 
       <div id="toast" class="pointer-events-none fixed bottom-5 right-5 hidden rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white shadow-panel"></div>
     </main>

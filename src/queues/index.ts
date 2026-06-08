@@ -29,6 +29,16 @@ export interface GitRepoSyncJobPayload {
   knowledgeBaseId?: number | null;
 }
 
+export interface ReembedJobPayload {
+  targetModel: string;
+  targetDimension: number;
+  batchSize?: number;
+}
+
+// Empty payload - the worker always claims the next pending batch from the DB
+// (see EmbeddingPendingService) and re-enqueues itself while work remains.
+export type EmbedPendingJobPayload = Record<string, never>;
+
 export const redisConnection = new IORedis(env.REDIS_URL, {
   maxRetriesPerRequest: null,
   enableReadyCheck: false
@@ -38,3 +48,5 @@ export const crawlQueue = new Queue<CrawlJobPayload>("crawl", { connection: redi
 export const syncQueue = new Queue<SyncJobPayload>("sync", { connection: redisConnection });
 export const ingestQueue = new Queue<IngestJobPayload>("ingest", { connection: redisConnection });
 export const gitRepoSyncQueue = new Queue<GitRepoSyncJobPayload>("git-sync", { connection: redisConnection });
+export const reembedQueue = new Queue<ReembedJobPayload>("reembed", { connection: redisConnection });
+export const embedPendingQueue = new Queue<EmbedPendingJobPayload>("embed-pending", { connection: redisConnection });

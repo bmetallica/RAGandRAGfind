@@ -207,6 +207,63 @@ async function findSupplementalDocuments(
         SELECT
           $1::text[] AS terms,
           lower(regexp_replace(array_to_string($1::text[], ' '), '[^[:alnum:]]+', ' ', 'g')) AS normalized_query
+      ),
+      term_matches AS (
+        SELECT
+          matched_documents.document_id,
+          matched_documents.term,
+          matched_documents.term_score
+        FROM query_input qi
+        CROSS JOIN LATERAL unnest(qi.terms) AS query_term(term)
+        JOIN LATERAL (
+          SELECT
+            d.id AS document_id,
+            query_term.term,
+            CASE
+              WHEN strpos(d.search_lookup_normalized, query_term.term) > 0 THEN 2.5
+              ELSE 0.75
+            END AS term_score,
+            CASE
+              WHEN strpos(d.search_lookup_normalized, query_term.term) > 0 THEN 1
+              ELSE 0
+            END AS exact_term_match,
+            GREATEST(
+              similarity(d.search_lookup_normalized, query_term.term),
+              word_similarity(d.search_lookup_normalized, query_term.term)
+            ) AS fuzzy_score
+          FROM documents d
+          WHERE (
+              $2::bigint[] IS NULL
+              OR (cardinality($2::bigint[]) > 0 AND d.knowledge_base_id = ANY($2::bigint[]))
+            )
+            AND (
+              strpos(d.search_lookup_normalized, query_term.term) > 0
+              OR (
+                char_length(query_term.term) >= 4
+                AND d.search_lookup_normalized % query_term.term
+              )
+            )
+          ORDER BY exact_term_match DESC, fuzzy_score DESC, d.id DESC
+          LIMIT GREATEST($3::integer * 8, 40)
+        ) AS matched_documents ON TRUE
+      ),
+      candidate_documents AS (
+        SELECT DISTINCT document_id
+        FROM term_matches
+      ),
+      document_lookup AS (
+        SELECT
+          d.id,
+          d.title,
+          d.source_type,
+          d.source_ref,
+          d.source_url,
+          d.file_type,
+          d.mime_type,
+          COALESCE(d.extracted_text, '') AS extracted_text,
+          d.search_lookup_normalized AS normalized_lookup
+        FROM documents d
+        INNER JOIN candidate_documents cd ON cd.document_id = d.id
       )
       SELECT
         d.id AS document_id,
@@ -216,35 +273,16 @@ async function findSupplementalDocuments(
         d.source_url,
         d.file_type,
         d.mime_type,
-        COALESCE(d.extracted_text, '') AS extracted_text,
-        SUM(
-          CASE
-            WHEN lower(COALESCE(d.title, '')) LIKE '%' || term || '%' THEN 3.0
-            WHEN lower(d.source_ref) LIKE '%' || term || '%' THEN 2.5
-            WHEN lower(COALESCE(d.extracted_text, '')) LIKE '%' || term || '%' THEN 0.35
-            ELSE 0
-          END
-        )
+        d.extracted_text,
+        COALESCE(SUM(tm.term_score), 0)
         + CASE
-            WHEN lower(COALESCE(d.title, '') || ' ' || d.source_ref) LIKE '%' || replace(qi.normalized_query, ' ', '%') || '%' THEN 2.0
+            WHEN d.normalized_lookup LIKE '%' || replace(qi.normalized_query, ' ', '%') || '%' THEN 2.0
             ELSE 0
           END AS match_score
-      FROM documents d
+      FROM document_lookup d
       CROSS JOIN query_input qi
-      CROSS JOIN LATERAL unnest(qi.terms) AS term
-      WHERE (
-          $2::bigint[] IS NULL
-          OR (cardinality($2::bigint[]) > 0 AND d.knowledge_base_id = ANY($2::bigint[]))
-        )
-      GROUP BY d.id, d.title, d.source_type, d.source_ref, d.source_url, d.file_type, d.mime_type, d.extracted_text, qi.normalized_query
-      HAVING SUM(
-        CASE
-          WHEN lower(COALESCE(d.title, '')) LIKE '%' || term || '%' THEN 1
-          WHEN lower(d.source_ref) LIKE '%' || term || '%' THEN 1
-          WHEN lower(COALESCE(d.extracted_text, '')) LIKE '%' || term || '%' THEN 1
-          ELSE 0
-        END
-      ) > 0
+      LEFT JOIN term_matches tm ON tm.document_id = d.id
+      GROUP BY d.id, d.title, d.source_type, d.source_ref, d.source_url, d.file_type, d.mime_type, d.extracted_text, d.normalized_lookup, qi.normalized_query
       ORDER BY match_score DESC, d.id DESC
       LIMIT $3::integer
     `,
@@ -269,16 +307,27 @@ async function resolveRagfindScope(): Promise<{ knowledgeBaseIds: number[]; know
 }
 
 async function buildSearchResults(query: string, topK: number): Promise<{ knowledgeBases: KnowledgeBaseRecord[]; results: SearchResultGroup[] }> {
+  const startedAt = Date.now();
+  const timings: Record<string, number> = {};
   const scope = await resolveRagfindScope();
-  const retrievalTopK = Math.min(Math.max(topK * 6, 36), 120);
+  timings.scopeResolutionMs = Date.now() - startedAt;
+  const retrievalTopK = Math.min(Math.max(topK * 3, 18), 48);
+  const retrievalStartedAt = Date.now();
   const payload = await executeSmartSearchQuery({
     query,
     topK: retrievalTopK,
     model: env.EMBEDDING_MODEL,
+    enableSmallToBig: false,
+    preferDocumentFocus: false,
+    preferAdjacentSections: false,
+    requireFocusTerms: false,
     allowedKnowledgeBaseIds: scope.knowledgeBaseIds
   });
+  timings.smartSearchMs = Date.now() - retrievalStartedAt;
 
+  const fileLookupStartedAt = Date.now();
   const fileMap = await getDocumentFilesByDocumentIds([...new Set(payload.items.map((item) => item.documentId))]);
+  timings.fileLookupMs = Date.now() - fileLookupStartedAt;
   const grouped = new Map<number, SearchResultGroup>();
 
   for (const item of payload.items) {
@@ -330,6 +379,7 @@ async function buildSearchResults(query: string, topK: number): Promise<{ knowle
   }
 
   if (grouped.size < topK) {
+    const supplementalStartedAt = Date.now();
     const supplementalDocuments = await findSupplementalDocuments(query, topK * 4, scope.knowledgeBaseIds);
     const supplementalIds = supplementalDocuments
       .map((entry) => Number(entry.document_id))
@@ -377,7 +427,20 @@ async function buildSearchResults(query: string, topK: number): Promise<{ knowle
         break;
       }
     }
+    timings.supplementalMs = Date.now() - supplementalStartedAt;
   }
+
+  logger.debug({
+    query,
+    topK,
+    retrievalTopK,
+    payloadItemCount: payload.items.length,
+    groupedDocumentCount: grouped.size,
+    timings: {
+      ...timings,
+      totalMs: Date.now() - startedAt
+    }
+  }, "ragfind search results built");
 
   return {
     knowledgeBases: scope.knowledgeBases,

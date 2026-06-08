@@ -55,6 +55,8 @@ It combines:
 - extraction for PDF, DOCX, ODT, TXT, Markdown, HTML, JSON, YAML, SQL, JS, TS, Python, shell scripts, and other text/code formats
 - OCR fallback using Tesseract and Ghostscript when direct extraction is insufficient
 - SHA-256 deduplication before chunk/vector persistence
+- type-aware chunking: Ollama classification runs before chunking and determines both the stored document type and the chunk size/overlap (overridable per type in document-type settings, otherwise falls back to the global default)
+- embedding runs fully asynchronously in the background: chunks are persisted immediately as `pending`, are searchable right away through full-text/trigram search, and are embedded by a separate worker once Ollama is reachable — the ingestion transaction never blocks on an Ollama round trip
 
 ### Retrieval
 
@@ -95,7 +97,7 @@ It combines:
 - knowledge base CRUD in the admin UI
 - MCP principal management with KB scoping
 - admin user management and password change flow
-- editable document-type settings used by heuristics, classification, and smart search
+- editable document-type settings used by heuristics, classification, smart search, and per-type chunk size/overlap overrides (empty = global default)
 - configurable `RAGfind` knowledge-base scope
 
 ## Architecture
@@ -114,10 +116,10 @@ Primary ingestion flow:
 
 1. extract text from uploaded, synced, crawled, or git-based content
 2. fall back to OCR when extraction is insufficient
-3. normalize and chunk the content
-4. generate embeddings through Ollama
-5. persist documents, chunks, sections, original-file metadata, and analysis artifacts in PostgreSQL
-6. expose retrieval through HTTP, admin UI, MCP, and `RAGfind`
+3. normalize the content and classify it through Ollama — the classification result determines both the stored document type and the chunk size/overlap configured for that type (or the global default)
+4. split the content into chunks using those parameters and persist documents, chunks, sections, original-file metadata, and analysis artifacts in PostgreSQL — chunks start out with `embedding_status = 'pending'` and are immediately searchable through full-text and trigram search
+5. embeddings are then generated asynchronously by a background worker: a health check waits for a reachable Ollama endpoint, transient errors (connection drops, timeouts, 5xx) are retried indefinitely with backoff, and permanent configuration errors (e.g. dimension mismatches) immediately mark the affected chunks as `failed` instead of blocking the queue
+6. expose retrieval through HTTP, admin UI, MCP, and `RAGfind` — live progress of the embedding backlog is visible in the admin dashboard (see "Dashboard And Admin UI")
 
 ## Repository Layout
 
@@ -157,8 +159,7 @@ cp .env.example .env
 
 2. Adjust at least these values:
 
-- `OLLAMA_BASE_URL`
-- optionally `DOCUMENT_CLASSIFIER_OLLAMA_BASE_URL`
+- `OLLAMA_BASE_URL` (seed value only; the running AI provider configuration is then managed in the Admin UI under "Config-AI")
 - optionally `PUBLIC_BASE_URL`
 
 3. Build and start the full stack.
@@ -239,12 +240,11 @@ Core services:
 - `REDIS_URL`: Redis connection string
 - `PUBLIC_BASE_URL`: used for emitted download links and external references
 
-LLM and embedding:
+LLM and embedding (seed values for the initial setup only - the persistent configuration is then managed in the Admin UI under "Config-AI", see below):
 
 - `OLLAMA_BASE_URL`
 - `EMBEDDING_MODEL`
 - `LLM_MODEL`
-- `DOCUMENT_CLASSIFIER_OLLAMA_BASE_URL`
 - `DOCUMENT_CLASSIFIER_MODEL`
 - `EMBEDDING_DIMENSION`
 
@@ -277,19 +277,19 @@ See `.env.example` for the current defaults.
 
 ## Dashboard And Admin UI
 
-The admin console on port `3311` currently includes:
+The admin console on port `3311` is organized around a navigation menu with seven areas (hash-based routing, so each view is directly linkable and supports the browser's back/forward navigation):
 
-- upload, crawl, directory sync, and git import forms
-- document browser with preview and per-document actions
-- document analysis trigger surfaces
-- document reclassification support
-- knowledge base management
-- MCP principal management
-- admin user management
-- document-type settings
-- `RAGfind` KB selection
+- **Overview** — stats, system health (Ollama/Elasticsearch/Postgres), and live progress of the asynchronous embedding pipeline (a progress bar showing "X / Y chunks embedded" plus a note about failed chunks once `failed > 0`)
+- **Ingestion** — upload, crawl, directory sync, schedule, and git import forms, queue jobs, and embedding progress
+- **Documents** — document browser with preview, filtering, the analysis workbench, and document reclassification support
+- **Search** — RAG query testing against the search stack
+- **Knowledge Base & Types** — knowledge base management, document-type settings (including per-type chunk size/overlap), and `RAGfind` KB selection
+- **System** — MCP principal management, admin user management, password change, Elasticsearch operations, git repository import status, and runtime configuration
+- **Config-AI** — configuration of the AI provider (Ollama or an OpenAI-compatible API): server URL, optional API key, and a dropdown per component (embedding, summarization, document classification) populated live with the models actually available on the configured server. Changes take effect immediately, without a restart — switching the embedding model is verified via a test call for dimension compatibility on save and rejected with a clear error message on conflict (see `EMBEDDING_DIMENSION` above)
 
 The admin console is the place where `RAGfind` search scope is configured.
+
+Embedding progress is updated through live polling (`GET /api/admin/embeddings/pending-status`): while chunks remain `pending` or `failed`, the UI polls the status every 5 seconds and hides the panel once everything has been embedded.
 
 ## RAGfind
 
@@ -420,8 +420,11 @@ For deeper product direction and retrieval design notes, see:
 This is an actively evolving repository, but the current implementation already includes:
 
 - multi-source ingestion
+- type-aware chunking driven by classification that runs ahead of chunking
+- fully asynchronous embedding pipeline with health checks, error-classified retries, and live progress tracking in the dashboard
 - persisted structure and original file references
 - analysis and summary workflows
 - MCP integration
 - knowledge-base-aware admin configuration
+- navigation-based admin UI with seven clearly separated areas
 - separate `RAGfind` search experience with local viewer

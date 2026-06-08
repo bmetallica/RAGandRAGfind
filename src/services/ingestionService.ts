@@ -2,14 +2,16 @@ import path from "node:path";
 import { pool } from "../db/pool";
 import { env } from "../config/env";
 import { ExtractorService } from "./extractorService";
-import { VectorService } from "./vectorService";
 import { normalizeDocumentText, smartChunkText } from "../utils/chunking";
 import { sha256 } from "../utils/hash";
 import { inferDocumentType, persistDocumentStructure } from "./documentService";
+import { getDocumentTypeSettingByKey } from "./documentTypeRegistryService";
 import { upsertDocumentFile } from "./originalFileService";
 import { logger } from "../utils/logger";
 import { searchIndexService } from "./searchIndexService";
+import { embedPendingQueue } from "../queues";
 import { DocumentClassificationService } from "./classificationService";
+import { getAiProviderSettings } from "./aiProviderSettingsService";
 
 export interface IngestTextInput {
   sourceType: string;
@@ -35,10 +37,35 @@ export interface IngestFileInput {
   metadata?: Record<string, unknown>;
 }
 
+function sanitizeString(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  return value.replace(/\u0000/g, "");
+}
+
+function sanitizeUnknown(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.replace(/\u0000/g, "");
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeUnknown(entry));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, sanitizeUnknown(entry)])
+    );
+  }
+
+  return value;
+}
+
 export class IngestionService {
   constructor(
     private readonly extractorService = new ExtractorService(),
-    private readonly vectorService = new VectorService(),
     private readonly classificationService = new DocumentClassificationService()
   ) {}
 
@@ -77,15 +104,17 @@ export class IngestionService {
       throw new Error(`no text extracted for ${input.sourceRef}`);
     }
 
-    const contentHash = sha256(normalizedText);
-    const chunks = smartChunkText(normalizedText, {
-      chunkSize: env.CHUNK_SIZE,
-      overlap: env.CHUNK_OVERLAP
-    });
+    const sanitizedSourceType = sanitizeString(input.sourceType) ?? input.sourceType;
+    const sanitizedSourceRef = sanitizeString(input.sourceRef) ?? input.sourceRef;
+    const sanitizedSourceUrl = sanitizeString(input.sourceUrl);
+    const sanitizedTitle = sanitizeString(input.title);
+    const sanitizedMimeType = sanitizeString(input.mimeType);
+    const sanitizedFileType = sanitizeString(input.fileType);
+    const sanitizedOriginalFileName = sanitizeString(input.originalFileName);
+    const sanitizedOriginalExternalUrl = sanitizeString(input.originalExternalUrl);
+    const sanitizedMetadata = sanitizeUnknown(input.metadata ?? {}) as Record<string, unknown>;
 
-    if (chunks.length === 0) {
-      throw new Error(`chunking produced no output for ${input.sourceRef}`);
-    }
+    const contentHash = sha256(normalizedText);
 
     const preflightExisting = await pool.query<{ id: number }>(
       `
@@ -102,35 +131,51 @@ export class IngestionService {
     }
 
     const heuristicDocumentType = inferDocumentType({
-      title: input.title,
-      sourceRef: input.sourceRef,
-      sourceType: input.sourceType,
-      fileType: input.fileType,
-      metadata: input.metadata
+      title: sanitizedTitle,
+      sourceRef: sanitizedSourceRef,
+      sourceType: sanitizedSourceType,
+      fileType: sanitizedFileType,
+      metadata: sanitizedMetadata
     });
 
+    // Classification runs before chunking now: its result (grounded in the
+    // actual extracted/OCR'd text, unlike the metadata-only heuristic) drives
+    // both the stored document type AND the chunk parameters below - so e.g. a
+    // generically-named OCR'd scientific PDF still gets book-appropriate
+    // chunking instead of silently falling back to "generic" sizing.
     let classificationMetadata: Record<string, unknown> | null = null;
+    let resolvedDocumentType = heuristicDocumentType;
     try {
       const classification = await this.classificationService.classifyDocument({
-        title: input.title,
-        sourceRef: input.sourceRef,
-        sourceType: input.sourceType,
-        fileType: input.fileType,
+        title: sanitizedTitle,
+        sourceRef: sanitizedSourceRef,
+        sourceType: sanitizedSourceType,
+        fileType: sanitizedFileType,
         text: normalizedText,
         fallbackDocumentType: heuristicDocumentType
       });
 
-      classificationMetadata = this.classificationService.buildClassificationMetadata(input.metadata, classification);
+      classificationMetadata = this.classificationService.buildClassificationMetadata(sanitizedMetadata, classification);
+      resolvedDocumentType = classification.documentType;
     } catch (error) {
-      logger.warn({ err: error, sourceRef: input.sourceRef }, "document classification failed; falling back to heuristic document type");
+      logger.warn({ err: error, sourceRef: sanitizedSourceRef }, "document classification failed; falling back to heuristic document type");
       classificationMetadata = {
         documentType: heuristicDocumentType
       };
     }
 
-    const documentMetadata = {
+    const documentMetadata = sanitizeUnknown({
       ...(classificationMetadata ?? {})
-    };
+    }) as Record<string, unknown>;
+
+    const documentTypeSetting = getDocumentTypeSettingByKey(resolvedDocumentType);
+    const chunkSize = documentTypeSetting?.chunkingSettings.chunkSize ?? env.CHUNK_SIZE;
+    const overlap = documentTypeSetting?.chunkingSettings.overlap ?? env.CHUNK_OVERLAP;
+    const chunks = smartChunkText(normalizedText, { chunkSize, overlap });
+
+    if (chunks.length === 0) {
+      throw new Error(`chunking produced no output for ${input.sourceRef}`);
+    }
 
     const client = await pool.connect();
     let committedDocumentId: number | null = null;
@@ -171,14 +216,14 @@ export class IngestionService {
           RETURNING id
         `,
         [
-          input.sourceType,
-          input.sourceRef,
-          input.sourceUrl ?? null,
-          input.title ?? null,
+          sanitizedSourceType,
+          sanitizedSourceRef,
+          sanitizedSourceUrl,
+          sanitizedTitle,
           input.knowledgeBaseId ?? null,
           contentHash,
-          input.mimeType ?? null,
-          input.fileType ?? null,
+          sanitizedMimeType,
+          sanitizedFileType,
           normalizedText,
           JSON.stringify(documentMetadata)
         ]
@@ -186,8 +231,15 @@ export class IngestionService {
 
       const documentId = documentInsert.rows[0].id;
       committedDocumentId = documentId;
-      const embeddings = await this.vectorService.embed(chunks.map((chunk) => chunk.content));
-      for (const [index, chunk] of chunks.entries()) {
+      const aiProviderSettings = await getAiProviderSettings();
+      // Chunks are persisted WITHOUT embeddings - embedding happens out-of-band
+      // in the embed-pending worker (see EmbeddingPendingService), triggered
+      // below right after COMMIT. This keeps the transaction short (no Ollama
+      // round-trip held open) and makes the document immediately searchable via
+      // full-text/trigram search; vector search "catches up" once embedding
+      // completes. It also means a slow/unreachable Ollama can never block
+      // ingestion or exhaust the connection pool.
+      for (const chunk of chunks) {
         await client.query(
           `
             INSERT INTO document_chunks (
@@ -199,8 +251,11 @@ export class IngestionService {
               start_offset,
               end_offset,
               metadata,
-              embedding
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector)
+              embedding,
+              embedding_status,
+              embedding_model,
+              embedding_dimension
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, 'pending', $9, $10)
           `,
           [
             documentId,
@@ -216,7 +271,8 @@ export class IngestionService {
               startOffset: chunk.startOffset,
               endOffset: chunk.endOffset
             }),
-            `[${embeddings[index].join(",")}]`
+            aiProviderSettings.embeddingModel,
+            aiProviderSettings.embeddingDimension
           ]
         );
       }
@@ -229,19 +285,22 @@ export class IngestionService {
       if (input.originalFilePath || input.originalExternalUrl || input.sourceUrl) {
         await upsertDocumentFile(client, documentId, {
           localPath: input.originalFilePath,
-          externalUrl: input.originalExternalUrl ?? input.sourceUrl,
-          originalName: input.originalFileName ?? input.title ?? input.sourceRef,
-          mimeType: input.mimeType,
+          externalUrl: sanitizedOriginalExternalUrl ?? sanitizedSourceUrl,
+          originalName: sanitizedOriginalFileName ?? sanitizedTitle ?? sanitizedSourceRef,
+          mimeType: sanitizedMimeType,
           metadata: {
             ...documentMetadata,
-            sourceType: input.sourceType,
-            sourceRef: input.sourceRef
+            sourceType: sanitizedSourceType,
+            sourceRef: sanitizedSourceRef
           }
         });
       }
 
       await client.query("COMMIT");
       committedChunkCount = chunks.length;
+      void embedPendingQueue.add("embed-pending", {}).catch((error) => {
+        logger.warn({ err: error, documentId }, "failed to enqueue pending-embedding job after ingestion");
+      });
       return { documentId, duplicate: false, chunkCount: chunks.length };
     } catch (error) {
       await client.query("ROLLBACK");

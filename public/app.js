@@ -1,5 +1,9 @@
 const statsEl = document.getElementById("stats");
 const statusBadgeEl = document.getElementById("status-badge");
+const embeddingProgressPanelEl = document.getElementById("embedding-progress-panel");
+const embeddingProgressSummaryEl = document.getElementById("embedding-progress-summary");
+const embeddingProgressBarEl = document.getElementById("embedding-progress-bar");
+const embeddingProgressFailedEl = document.getElementById("embedding-progress-failed");
 const configEl = document.getElementById("config");
 const jobsEl = document.getElementById("jobs");
 const jobsPaginationEl = document.getElementById("jobs-pagination");
@@ -19,11 +23,9 @@ const categorySelectEls = [...document.querySelectorAll("[data-category-select]"
 const sourceTypeSelectEls = [...document.querySelectorAll("[data-source-type-select]")];
 const mcpTokenOutputEl = document.getElementById("mcp-token-output");
 const settingsToggleEl = document.getElementById("settings-toggle");
-const settingsModalEl = document.getElementById("settings-modal");
-const settingsCloseEl = document.getElementById("settings-close");
 const adminAccessToggleEl = document.getElementById("admin-access-toggle");
-const adminAccessModalEl = document.getElementById("admin-access-modal");
-const adminAccessCloseEl = document.getElementById("admin-access-close");
+const viewNavButtons = [...document.querySelectorAll("[data-view]")];
+const viewPanelEls = [...document.querySelectorAll("[data-view-panel]")];
 const adminPasswordFormEl = document.getElementById("admin-password-form");
 const adminUserFormEl = document.getElementById("admin-user-form");
 const adminUsersEl = document.getElementById("admin-users");
@@ -36,6 +38,19 @@ const ragfindKnowledgeBaseOptionsEl = document.getElementById("ragfind-knowledge
 const ragfindSettingsFormEl = document.getElementById("ragfind-settings-form");
 const ragfindSettingsSummaryEl = document.getElementById("ragfind-settings-summary");
 const gitImportAdminStatusEl = document.getElementById("git-import-admin-status");
+const aiProviderSettingsFormEl = document.getElementById("ai-provider-settings-form");
+const aiProviderSelectEl = document.getElementById("ai-provider-select");
+const aiProviderBaseUrlEl = document.getElementById("ai-provider-base-url");
+const aiProviderApiKeyFieldEl = document.getElementById("ai-provider-api-key-field");
+const aiProviderApiKeyEl = document.getElementById("ai-provider-api-key");
+const aiProviderApiKeyHintEl = document.getElementById("ai-provider-api-key-hint");
+const aiProviderLoadModelsEl = document.getElementById("ai-provider-load-models");
+const aiProviderReachabilityEl = document.getElementById("ai-provider-reachability");
+const aiProviderEmbeddingModelEl = document.getElementById("ai-provider-embedding-model");
+const aiProviderSummaryModelEl = document.getElementById("ai-provider-summary-model");
+const aiProviderClassifierModelEl = document.getElementById("ai-provider-classifier-model");
+const aiProviderEmbeddingDimensionEl = document.getElementById("ai-provider-embedding-dimension");
+const aiProviderSettingsSummaryEl = document.getElementById("ai-provider-settings-summary");
 const documentPreviewEl = document.getElementById("document-preview");
 const documentPreviewFormEl = document.getElementById("document-preview-form");
 const documentFiltersFormEl = document.getElementById("document-filters-form");
@@ -59,6 +74,17 @@ const state = {
     knowledgeBases: [],
     updatedAt: null
   },
+  aiProviderSettings: {
+    provider: "ollama",
+    baseUrl: "",
+    apiKeySet: false,
+    embeddingModel: "",
+    summaryModel: "",
+    classifierModel: "",
+    embeddingDimension: null,
+    updatedAt: null
+  },
+  aiProviderModels: [],
   jobsPage: 1,
   documentsPage: 1,
   pageSize: 5,
@@ -190,8 +216,8 @@ function renderClassificationAdminStatus(config) {
 
   const items = [
     {
-      label: "Ollama Host",
-      value: config.documentClassifierOllamaBaseUrl || "-"
+      label: "KI-Server",
+      value: config.ollamaBaseUrl || "-"
     },
     {
       label: "Modell",
@@ -217,6 +243,35 @@ function renderClassificationAdminStatus(config) {
       `
     )
     .join("");
+}
+
+function renderEmbeddingProgress(progress) {
+  if (!embeddingProgressPanelEl) {
+    return;
+  }
+
+  if (!progress || progress.total === 0) {
+    embeddingProgressPanelEl.classList.add("hidden");
+    return;
+  }
+
+  const donePercent = Math.round(((progress.completed + progress.failed) / progress.total) * 100);
+
+  if (progress.pending === 0 && progress.failed === 0) {
+    embeddingProgressPanelEl.classList.add("hidden");
+  } else {
+    embeddingProgressPanelEl.classList.remove("hidden");
+  }
+
+  embeddingProgressSummaryEl.textContent = `${progress.completed} / ${progress.total} Chunks eingebettet (${progress.pending} ausstehend)`;
+  embeddingProgressBarEl.style.width = `${donePercent}%`;
+
+  if (progress.failed > 0) {
+    embeddingProgressFailedEl.textContent = `${progress.failed} Chunk(s) konnten nicht eingebettet werden - siehe Logs.`;
+    embeddingProgressFailedEl.classList.remove("hidden");
+  } else {
+    embeddingProgressFailedEl.classList.add("hidden");
+  }
 }
 
 function renderGitImportAdminStatus(config, jobs = state.jobs) {
@@ -272,6 +327,9 @@ function renderDocumentTypeSettings(settings) {
   documentTypeSettingsEl.innerHTML = settings
     .map((setting) => {
       const searchSettings = setting.searchSettings || {};
+      const chunkingSettings = setting.chunkingSettings || {};
+      const globalChunkSize = state.status?.config?.chunkSize ?? "";
+      const globalChunkOverlap = state.status?.config?.chunkOverlap ?? "";
       return `
         <form data-document-type-key="${escapeHtml(setting.key)}" class="rounded-3xl border border-black/10 bg-cloud/55 p-4 text-sm dark:border-white/10 dark:bg-dusk/65">
           <div class="flex items-start justify-between gap-3">
@@ -327,6 +385,14 @@ function renderDocumentTypeSettings(settings) {
               </label>
             </div>
           </div>
+          <div class="mt-4 rounded-2xl border border-black/10 bg-white/70 p-4 dark:border-white/10 dark:bg-black/20">
+            <div class="text-xs font-semibold uppercase tracking-[0.18em] text-black/45 dark:text-white/45">Chunking</div>
+            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Leer lassen, um den globalen Standard zu erben (aktuell ${escapeHtml(globalChunkSize)} / ${escapeHtml(globalChunkOverlap)} Tokens).</p>
+            <div class="mt-3 grid gap-3 md:grid-cols-2">
+              <input name="chunkSize" type="number" min="50" max="2000" value="${escapeHtml(chunkingSettings.chunkSize ?? "")}" class="rounded-2xl border border-black/10 bg-white/80 px-3 py-2 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-black/25" placeholder="Chunk-Groesse (Tokens), Standard: ${escapeHtml(globalChunkSize)}" />
+              <input name="chunkOverlap" type="number" min="0" max="500" value="${escapeHtml(chunkingSettings.overlap ?? "")}" class="rounded-2xl border border-black/10 bg-white/80 px-3 py-2 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-black/25" placeholder="Chunk-Overlap (Tokens), Standard: ${escapeHtml(globalChunkOverlap)}" />
+            </div>
+          </div>
           <div class="mt-3 flex justify-end">
             <button class="rounded-full bg-graphite px-4 py-2 text-xs font-semibold text-white transition hover:bg-ember">Typ speichern</button>
           </div>
@@ -364,6 +430,10 @@ function renderDocumentTypeSettings(settings) {
               preferAdjacentSections: formData.get("preferAdjacentSections") === "on",
               adjacentSectionWindow: Number(formData.get("adjacentSectionWindow") || 1),
               smallToBigWindow: Number(formData.get("smallToBigWindow") || 1)
+            },
+            chunkingSettings: {
+              chunkSize: formData.get("chunkSize") ? Number(formData.get("chunkSize")) : null,
+              overlap: formData.get("chunkOverlap") ? Number(formData.get("chunkOverlap")) : null
             }
           })
         });
@@ -408,6 +478,100 @@ function renderRagfindSettings(settings = state.ragfindSettings) {
   ragfindSettingsSummaryEl.textContent = selectedNames.length
     ? `Aktiv fuer RAGfind: ${selectedNames.join(", ")}`
     : "RAGfind hat aktuell keine Wissensdatenbanken konfiguriert.";
+}
+
+function fillModelSelect(selectEl, models, selectedValue) {
+  if (!selectEl) {
+    return;
+  }
+
+  const options = [...models];
+  if (selectedValue && !options.includes(selectedValue)) {
+    options.unshift(selectedValue);
+  }
+
+  selectEl.innerHTML = options.length
+    ? options.map((model) => `<option value="${escapeHtml(model)}" ${model === selectedValue ? "selected" : ""}>${escapeHtml(model)}</option>`).join("")
+    : '<option value="">Keine Modelle geladen</option>';
+
+  if (selectedValue) {
+    selectEl.value = selectedValue;
+  }
+}
+
+function updateAiProviderApiKeyVisibility() {
+  if (!aiProviderSelectEl || !aiProviderApiKeyFieldEl) {
+    return;
+  }
+
+  const isOpenAi = aiProviderSelectEl.value === "openai";
+  aiProviderApiKeyFieldEl.classList.toggle("hidden", !isOpenAi);
+  aiProviderApiKeyHintEl.textContent = isOpenAi
+    ? (state.aiProviderSettings.apiKeySet ? "Schluessel hinterlegt - leer lassen, um ihn beizubehalten." : "Erforderlich fuer OpenAI-kompatible Provider.")
+    : "";
+}
+
+function renderAiProviderSettings(settings = state.aiProviderSettings) {
+  state.aiProviderSettings = settings;
+
+  if (!aiProviderSettingsFormEl) {
+    return;
+  }
+
+  aiProviderSelectEl.value = settings.provider;
+  aiProviderBaseUrlEl.value = settings.baseUrl || "";
+  aiProviderApiKeyEl.value = "";
+  aiProviderEmbeddingDimensionEl.textContent = settings.embeddingDimension != null ? String(settings.embeddingDimension) : "-";
+
+  fillModelSelect(aiProviderEmbeddingModelEl, state.aiProviderModels, settings.embeddingModel);
+  fillModelSelect(aiProviderSummaryModelEl, state.aiProviderModels, settings.summaryModel);
+  fillModelSelect(aiProviderClassifierModelEl, state.aiProviderModels, settings.classifierModel);
+
+  updateAiProviderApiKeyVisibility();
+
+  aiProviderSettingsSummaryEl.textContent = settings.updatedAt
+    ? `Provider: ${settings.provider === "openai" ? "OpenAI-kompatibel" : "Ollama"} - zuletzt aktualisiert ${formatDate(settings.updatedAt)}`
+    : `Provider: ${settings.provider === "openai" ? "OpenAI-kompatibel" : "Ollama"}`;
+
+  aiProviderReachabilityEl.textContent = "";
+}
+
+async function loadAiProviderModelOptions() {
+  if (!aiProviderBaseUrlEl || !aiProviderSelectEl) {
+    return;
+  }
+
+  const provider = aiProviderSelectEl.value;
+  const baseUrl = aiProviderBaseUrlEl.value.trim();
+  const apiKey = aiProviderApiKeyEl.value.trim();
+
+  if (!baseUrl) {
+    showToast("Bitte zuerst eine Server-URL angeben", true);
+    return;
+  }
+
+  aiProviderReachabilityEl.textContent = "Pruefe Erreichbarkeit und lade Modelle ...";
+
+  try {
+    const params = new URLSearchParams({ provider, baseUrl });
+    if (apiKey) {
+      params.set("apiKey", apiKey);
+    }
+
+    const result = await requestJson(`/api/admin/ai-provider/models?${params.toString()}`);
+    const models = Array.isArray(result.models) ? result.models : [];
+    state.aiProviderModels = models;
+
+    fillModelSelect(aiProviderEmbeddingModelEl, models, aiProviderEmbeddingModelEl.value || state.aiProviderSettings.embeddingModel);
+    fillModelSelect(aiProviderSummaryModelEl, models, aiProviderSummaryModelEl.value || state.aiProviderSettings.summaryModel);
+    fillModelSelect(aiProviderClassifierModelEl, models, aiProviderClassifierModelEl.value || state.aiProviderSettings.classifierModel);
+
+    aiProviderReachabilityEl.textContent = models.length
+      ? `Server erreichbar - ${models.length} Modell(e) gefunden.`
+      : "Server erreichbar, aber keine Modelle gefunden.";
+  } catch (error) {
+    aiProviderReachabilityEl.textContent = `Server nicht erreichbar: ${error.message}`;
+  }
 }
 
 function renderElasticsearchAdminStatus(elasticsearch) {
@@ -497,36 +661,48 @@ function renderAdminUsers(users) {
     .join("");
 }
 
-function openAdminAccessModal() {
-  if (!adminAccessModalEl) {
-    return;
-  }
+const VIEW_KEYS = viewPanelEls.map((panel) => panel.dataset.viewPanel);
+const DEFAULT_VIEW = "uebersicht";
 
-  adminAccessModalEl.classList.remove("hidden");
+function getViewFromHash() {
+  const key = location.hash.replace(/^#\/?/, "");
+  return VIEW_KEYS.includes(key) ? key : DEFAULT_VIEW;
 }
 
-function closeAdminAccessModal() {
-  if (!adminAccessModalEl) {
-    return;
+function setActiveView(requestedView) {
+  const view = VIEW_KEYS.includes(requestedView) ? requestedView : DEFAULT_VIEW;
+
+  for (const panel of viewPanelEls) {
+    panel.classList.toggle("hidden", panel.dataset.viewPanel !== view);
   }
 
-  adminAccessModalEl.classList.add("hidden");
+  for (const button of viewNavButtons) {
+    if (!button.dataset.view) {
+      continue;
+    }
+
+    const isActive = button.dataset.view === view;
+    button.classList.toggle("bg-graphite", isActive);
+    button.classList.toggle("text-white", isActive);
+    button.classList.toggle("dark:bg-aurora/20", isActive);
+    button.classList.toggle("dark:text-aurora", isActive);
+    button.classList.toggle("text-black/60", !isActive);
+    button.classList.toggle("dark:text-white/60", !isActive);
+  }
+
+  const targetHash = `#/${view}`;
+  if (location.hash !== targetHash) {
+    history.replaceState(null, "", targetHash);
+  }
 }
 
-function openSettingsModal() {
-  if (!settingsModalEl) {
-    return;
+function navigateToView(view) {
+  const targetHash = `#/${view}`;
+  if (location.hash === targetHash) {
+    setActiveView(view);
+  } else {
+    location.hash = targetHash;
   }
-
-  settingsModalEl.classList.remove("hidden");
-}
-
-function closeSettingsModal() {
-  if (!settingsModalEl) {
-    return;
-  }
-
-  settingsModalEl.classList.add("hidden");
 }
 
 function getSelectedKnowledgeBaseIdsFromForm() {
@@ -985,6 +1161,7 @@ function renderJobs(jobs) {
           </div>
           <pre class="mt-3 overflow-auto rounded-2xl bg-white/80 p-3 text-xs text-slate-700 dark:bg-black/30 dark:text-slate-200">${formatJson(job.data)}</pre>
           ${job.failedReason ? `<p class="mt-2 text-xs text-rose-700 dark:text-rose-300">${escapeHtml(job.failedReason)}</p>` : ""}
+          ${Array.isArray(job.stacktrace) && job.stacktrace.length ? `<details class="mt-2 rounded-2xl bg-rose-50/80 p-3 text-xs text-rose-900 dark:bg-rose-950/30 dark:text-rose-100"><summary class="cursor-pointer font-semibold">Stacktrace</summary><pre class="mt-2 overflow-auto whitespace-pre-wrap">${escapeHtml(job.stacktrace.join("\n\n"))}</pre></details>` : ""}
         </article>
       `
     )
@@ -1342,7 +1519,7 @@ async function deleteDocument(documentId, title) {
 }
 
 async function refreshDashboard() {
-  const [status, config, jobs, schedules, knowledgeBases, principals, adminUsers, documentTypeSettings, ragfindSettings] = await Promise.all([
+  const [status, config, jobs, schedules, knowledgeBases, principals, adminUsers, documentTypeSettings, ragfindSettings, aiProviderSettings, embeddingProgress] = await Promise.all([
     requestJson("/api/status"),
     requestJson("/api/config"),
     requestJson("/api/jobs"),
@@ -1351,7 +1528,9 @@ async function refreshDashboard() {
     requestJson("/api/admin/mcp-principals"),
     requestJson("/api/admin/users"),
     requestJson("/api/admin/document-types"),
-    requestJson("/api/admin/ragfind/settings")
+    requestJson("/api/admin/ragfind/settings"),
+    requestJson("/api/admin/ai-provider/settings"),
+    requestJson("/api/admin/embeddings/pending-status")
   ]);
 
   renderStats(status);
@@ -1363,7 +1542,34 @@ async function refreshDashboard() {
   renderAdminUsers(adminUsers);
   renderDocumentTypeSettings(documentTypeSettings);
   renderRagfindSettings(ragfindSettings);
+  renderAiProviderSettings(aiProviderSettings);
+  renderEmbeddingProgress(embeddingProgress);
   await loadDocuments();
+
+  schedulePendingEmbeddingPoll(embeddingProgress);
+}
+
+let embeddingProgressPollTimer = null;
+
+function schedulePendingEmbeddingPoll(progress) {
+  if (embeddingProgressPollTimer) {
+    clearTimeout(embeddingProgressPollTimer);
+    embeddingProgressPollTimer = null;
+  }
+
+  if (!progress || (progress.pending === 0 && progress.failed === 0)) {
+    return;
+  }
+
+  embeddingProgressPollTimer = setTimeout(async () => {
+    try {
+      const next = await requestJson("/api/admin/embeddings/pending-status");
+      renderEmbeddingProgress(next);
+      schedulePendingEmbeddingPoll(next);
+    } catch {
+      // dashboard's own 20s refresh will pick this back up
+    }
+  }, 5000);
 }
 
 function onSubmitJson(form, url, buildPayload) {
@@ -1411,11 +1617,12 @@ onSubmitJson(document.getElementById("schedule-form"), "/api/schedules", (data) 
 
 document.getElementById("upload-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const form = event.currentTarget;
   try {
-    const formData = new FormData(event.currentTarget);
+    const formData = new FormData(form);
     await requestJson("/api/upload", { method: "POST", body: formData });
     showToast("Upload in Queue gelegt");
-    event.currentTarget.reset();
+    form.reset();
     await refreshDashboard();
   } catch (error) {
     showToast(error.message, true);
@@ -1637,36 +1844,19 @@ if (classificationReindexEl) {
   });
 }
 
+for (const button of viewNavButtons) {
+  button.addEventListener("click", () => navigateToView(button.dataset.view));
+}
+
+window.addEventListener("hashchange", () => setActiveView(getViewFromHash()));
+setActiveView(getViewFromHash());
+
 if (adminAccessToggleEl) {
-  adminAccessToggleEl.addEventListener("click", () => openAdminAccessModal());
+  adminAccessToggleEl.addEventListener("click", () => navigateToView("system"));
 }
 
 if (settingsToggleEl) {
-  settingsToggleEl.addEventListener("click", () => openSettingsModal());
-}
-
-if (adminAccessCloseEl) {
-  adminAccessCloseEl.addEventListener("click", () => closeAdminAccessModal());
-}
-
-if (settingsCloseEl) {
-  settingsCloseEl.addEventListener("click", () => closeSettingsModal());
-}
-
-if (adminAccessModalEl) {
-  adminAccessModalEl.addEventListener("click", (event) => {
-    if (event.target === adminAccessModalEl) {
-      closeAdminAccessModal();
-    }
-  });
-}
-
-if (settingsModalEl) {
-  settingsModalEl.addEventListener("click", (event) => {
-    if (event.target === settingsModalEl) {
-      closeSettingsModal();
-    }
-  });
+  settingsToggleEl.addEventListener("click", () => navigateToView("wissensbasis"));
 }
 
 if (ragfindSettingsFormEl) {
@@ -1685,6 +1875,44 @@ if (ragfindSettingsFormEl) {
 
       renderRagfindSettings(settings);
       showToast("RAGfind-Konfiguration gespeichert");
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  });
+}
+
+if (aiProviderSelectEl) {
+  aiProviderSelectEl.addEventListener("change", updateAiProviderApiKeyVisibility);
+}
+
+if (aiProviderLoadModelsEl) {
+  aiProviderLoadModelsEl.addEventListener("click", () => {
+    loadAiProviderModelOptions();
+  });
+}
+
+if (aiProviderSettingsFormEl) {
+  aiProviderSettingsFormEl.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const data = new FormData(aiProviderSettingsFormEl);
+      const payload = {
+        provider: String(data.get("provider") || "ollama"),
+        baseUrl: String(data.get("baseUrl") || "").trim(),
+        apiKey: String(data.get("apiKey") || ""),
+        embeddingModel: String(data.get("embeddingModel") || "").trim(),
+        summaryModel: String(data.get("summaryModel") || "").trim(),
+        classifierModel: String(data.get("classifierModel") || "").trim()
+      };
+
+      const settings = await requestJson("/api/admin/ai-provider/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      renderAiProviderSettings(settings);
+      showToast("KI-Provider-Konfiguration gespeichert");
     } catch (error) {
       showToast(error.message, true);
     }

@@ -5,7 +5,7 @@ import multer from "multer";
 import axios from "axios";
 import { pool } from "../db/pool";
 import { env } from "../config/env";
-import { crawlQueue, gitRepoSyncQueue, ingestQueue, syncQueue } from "../queues";
+import { crawlQueue, gitRepoSyncQueue, ingestQueue, reembedQueue, syncQueue } from "../queues";
 import { SchedulerService } from "../services/schedulerService";
 import { VectorService } from "../services/vectorService";
 import { AnalysisService, type AnalysisResponse, type ComparisonResponse, type CrossReferenceResponse, type SummaryResponse } from "../services/analysisService";
@@ -57,6 +57,14 @@ import {
   type DocumentTypeSearchSettings
 } from "../services/documentTypeRegistryService";
 import { getRagfindSettings, updateRagfindSettings } from "../services/ragfindSettingsService";
+import {
+  getAiProviderConnection,
+  getAiProviderSettings,
+  getEmbeddingModelName,
+  updateAiProviderSettings,
+  type UpdateAiProviderSettingsInput
+} from "../services/aiProviderSettingsService";
+import { checkReachable as checkAiProviderReachable, listModels as listAiProviderModels, type AiProvider, type AiProviderConnection } from "../services/aiProviderClient";
 
 interface SimilarityRow {
   chunk_id: number;
@@ -973,8 +981,8 @@ async function refineNarrativeSectionsWithinDocument(documentId: number, focusQu
           s.page_start,
           s.page_end,
           COUNT(*) FILTER (
-            WHERE (' ' || lower(regexp_replace(s.content, '[^[:alnum:]]+', ' ', 'g')) || ' ') LIKE '% ' || term || '%'
-              OR (' ' || lower(regexp_replace(COALESCE(s.title, ''), '[^[:alnum:]]+', ' ', 'g')) || ' ') LIKE '% ' || term || '%'
+            WHERE (' ' || s.search_content_normalized || ' ') LIKE '% ' || term || '%'
+              OR (' ' || s.search_title_normalized || ' ') LIKE '% ' || term || '%'
           ) AS term_hits
         FROM document_sections s
         INNER JOIN documents d ON d.id = s.document_id
@@ -1124,20 +1132,23 @@ async function refineItemsWithinDocument(documentId: number, query: string, limi
         CROSS JOIN query_search qs
         LEFT JOIN LATERAL (
           SELECT
-            COUNT(*) FILTER (WHERE strpos(lower(regexp_replace(c.content, '[^[:alnum:]]+', ' ', 'g')), term) > 0) AS term_hits,
-            COUNT(*) FILTER (WHERE strpos(lower(regexp_replace(COALESCE(s.content, ''), '[^[:alnum:]]+', ' ', 'g')), term) > 0) AS section_hits,
+            COUNT(*) FILTER (WHERE strpos(c.search_content_normalized, term) > 0) AS term_hits,
+            COUNT(*) FILTER (
+              WHERE strpos(COALESCE(s.search_content_normalized, ''), term) > 0
+                OR strpos(COALESCE(s.search_title_normalized, ''), term) > 0
+            ) AS section_hits,
             COALESCE(
               ts_rank_cd(
-                setweight(to_tsvector('simple', COALESCE(s.title, '')), 'A')
-                || setweight(to_tsvector('simple', COALESCE(s.content, c.content)), 'B'),
+                COALESCE(s.search_tsv, setweight(c.search_content_tsv, 'B')),
                 qs.tsquery
               ),
               0
             ) AS keyword_score,
             CASE
               WHEN qi.normalized_query IS NOT NULL AND qi.normalized_query <> '' AND (
-                strpos(lower(regexp_replace(c.content, '[^[:alnum:]]+', ' ', 'g')), qi.normalized_query) > 0
-                OR strpos(lower(regexp_replace(COALESCE(s.content, ''), '[^[:alnum:]]+', ' ', 'g')), qi.normalized_query) > 0
+                strpos(c.search_content_normalized, qi.normalized_query) > 0
+                OR strpos(COALESCE(s.search_content_normalized, ''), qi.normalized_query) > 0
+                OR strpos(COALESCE(s.search_title_normalized, ''), qi.normalized_query) > 0
               ) THEN TRUE
               ELSE FALSE
             END AS phrase_match
@@ -1198,7 +1209,10 @@ export async function executeSimilarityQuery(
   vectorService: VectorService,
   searchOptions?: SearchOptions
 ): Promise<QueryResponse> {
+  const startedAt = Date.now();
+  const timings: Record<string, number> = {};
   const candidateK = Math.max(topK * 4, env.QUERY_CANDIDATE_K, 24);
+  const candidateStageStartedAt = Date.now();
   const [embedding, elasticChunkCandidates, elasticDocumentCandidates] = await Promise.all([
     vectorService.embedOne(query, model),
     searchIndexService.searchChunkCandidates(
@@ -1212,7 +1226,10 @@ export async function executeSimilarityQuery(
       searchOptions?.allowedKnowledgeBaseIds
     )
   ]);
+  timings.embeddingAndCandidatesMs = Date.now() - candidateStageStartedAt;
   const elasticChunkCandidateIds = elasticChunkCandidates?.map((candidate) => candidate.chunkId) ?? null;
+  const elasticDocumentCandidateIds = elasticDocumentCandidates?.map((candidate) => candidate.documentId) ?? null;
+  const sqlStageStartedAt = Date.now();
   const result = await pool.query<SimilarityRow>(
     `
       WITH query_input AS (
@@ -1244,6 +1261,16 @@ export async function executeSimilarityQuery(
             ELSE NULL
           END AS tsquery
       ),
+      candidate_documents AS (
+        SELECT DISTINCT document_id
+        FROM (
+          SELECT unnest(COALESCE($10::bigint[], ARRAY[]::bigint[])) AS document_id
+          UNION ALL
+          SELECT c.document_id
+          FROM document_chunks c
+          WHERE c.id = ANY(COALESCE($11::bigint[], ARRAY[]::bigint[]))
+        ) candidate_rows
+      ),
       document_base AS (
         SELECT
           d.id,
@@ -1252,13 +1279,17 @@ export async function executeSimilarityQuery(
           d.source_ref,
           d.source_url,
           d.metadata,
-          lower(regexp_replace(COALESCE(d.title, '') || ' ' || COALESCE(d.source_ref, ''), '[^[:alnum:]]+', ' ', 'g')) AS normalized_ref,
-          lower(regexp_replace(left(COALESCE(d.extracted_text, ''), 16000), '[^[:alnum:]]+', ' ', 'g')) AS normalized_text
+          d.search_lookup_normalized AS normalized_ref,
+          d.search_text_normalized_preview AS normalized_text
         FROM documents d
         WHERE (
           $9::bigint[] IS NULL
           OR (cardinality($9::bigint[]) > 0 AND d.knowledge_base_id = ANY($9::bigint[]))
         )
+          AND (
+            NOT EXISTS (SELECT 1 FROM candidate_documents)
+            OR d.id IN (SELECT document_id FROM candidate_documents)
+          )
       ),
       document_signals AS (
         SELECT
@@ -1352,8 +1383,67 @@ export async function executeSimilarityQuery(
         INNER JOIN documents d ON d.id = c.document_id
         INNER JOIN document_signals ds ON ds.document_id = d.id
         CROSS JOIN query_input q
+        WHERE c.embedding IS NOT NULL
         ORDER BY c.embedding <=> q.embedding, c.id
         LIMIT $3::integer
+      ),
+      document_keyword_matches AS (
+        SELECT
+          d.id AS document_id,
+          ts_rank_cd(d.search_lookup_tsv, q.tsquery) AS document_keyword_score,
+          ROW_NUMBER() OVER (
+            ORDER BY ts_rank_cd(d.search_lookup_tsv, q.tsquery) DESC, d.id DESC
+          ) AS document_keyword_rank
+        FROM documents d
+        CROSS JOIN query_search q
+        WHERE q.tsquery IS NOT NULL
+          AND numnode(q.tsquery) > 0
+          AND d.search_lookup_tsv @@ q.tsquery
+      ),
+      top_document_keyword_matches AS (
+        SELECT document_id
+        FROM document_keyword_matches
+        WHERE document_keyword_rank <= ($3::integer * 2)
+      ),
+      document_keyword_seed_chunks AS (
+        SELECT chunk_id
+        FROM (
+          SELECT
+            c.id AS chunk_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY c.document_id
+              ORDER BY c.chunk_index ASC, c.id ASC
+            ) AS document_chunk_rank
+          FROM document_chunks c
+          INNER JOIN top_document_keyword_matches dkm ON dkm.document_id = c.document_id
+        ) ranked_document_chunks
+        WHERE document_chunk_rank <= GREATEST($7::integer, 1)
+      ),
+      chunk_keyword_matches AS (
+        SELECT
+          c.id AS chunk_id,
+          ts_rank_cd(c.search_content_tsv, q.tsquery) AS chunk_keyword_score,
+          ROW_NUMBER() OVER (
+            ORDER BY ts_rank_cd(c.search_content_tsv, q.tsquery) DESC, c.id DESC
+          ) AS chunk_keyword_rank
+        FROM document_chunks c
+        CROSS JOIN query_search q
+        WHERE q.tsquery IS NOT NULL
+          AND numnode(q.tsquery) > 0
+          AND c.search_content_tsv @@ q.tsquery
+      ),
+      top_chunk_keyword_matches AS (
+        SELECT chunk_id
+        FROM chunk_keyword_matches
+        WHERE chunk_keyword_rank <= ($3::integer * 4)
+      ),
+      keyword_seed_chunks AS (
+        SELECT DISTINCT chunk_id
+        FROM (
+          SELECT chunk_id FROM top_chunk_keyword_matches
+          UNION ALL
+          SELECT chunk_id FROM document_keyword_seed_chunks
+        ) keyword_seed_rows
       ),
       keyword_candidates AS (
         SELECT
@@ -1367,48 +1457,39 @@ export async function executeSimilarityQuery(
           d.metadata,
           ds.document_match_score,
           ts_rank_cd(
-            setweight(to_tsvector('simple', COALESCE(d.title, '')), 'A') ||
-            setweight(to_tsvector('simple', COALESCE(d.source_ref, '')), 'B') ||
-            setweight(to_tsvector('simple', c.content), 'C'),
+            d.search_lookup_tsv || setweight(c.search_content_tsv, 'C'),
             q.tsquery
           ) AS keyword_score,
           CASE
             WHEN qi.normalized_query IS NOT NULL AND (
-              strpos(lower(regexp_replace(COALESCE(d.title, ''), '[^[:alnum:]]+', ' ', 'g')), qi.normalized_query) > 0
-              OR strpos(lower(regexp_replace(d.source_ref, '[^[:alnum:]]+', ' ', 'g')), qi.normalized_query) > 0
-              OR strpos(lower(regexp_replace(c.content, '[^[:alnum:]]+', ' ', 'g')), qi.normalized_query) > 0
+              strpos(d.search_lookup_normalized, qi.normalized_query) > 0
+              OR strpos(c.search_content_normalized, qi.normalized_query) > 0
             ) THEN 1
             ELSE 0
           END AS exact_match_boost,
           ROW_NUMBER() OVER (
             ORDER BY
               ts_rank_cd(
-                setweight(to_tsvector('simple', COALESCE(d.title, '')), 'A') ||
-                setweight(to_tsvector('simple', COALESCE(d.source_ref, '')), 'B') ||
-                setweight(to_tsvector('simple', c.content), 'C'),
+                d.search_lookup_tsv || setweight(c.search_content_tsv, 'C'),
                 q.tsquery
               ) DESC,
               CASE
                 WHEN qi.normalized_query IS NOT NULL AND (
-                  strpos(lower(regexp_replace(COALESCE(d.title, ''), '[^[:alnum:]]+', ' ', 'g')), qi.normalized_query) > 0
-                  OR strpos(lower(regexp_replace(d.source_ref, '[^[:alnum:]]+', ' ', 'g')), qi.normalized_query) > 0
-                  OR strpos(lower(regexp_replace(c.content, '[^[:alnum:]]+', ' ', 'g')), qi.normalized_query) > 0
+                  strpos(d.search_lookup_normalized, qi.normalized_query) > 0
+                  OR strpos(c.search_content_normalized, qi.normalized_query) > 0
                 ) THEN 1
                 ELSE 0
               END DESC,
               c.id
           ) AS keyword_rank
-        FROM document_chunks c
+        FROM keyword_seed_chunks k
+        INNER JOIN document_chunks c ON c.id = k.chunk_id
         INNER JOIN documents d ON d.id = c.document_id
         INNER JOIN document_signals ds ON ds.document_id = d.id
         CROSS JOIN query_search q
         CROSS JOIN query_input qi
         WHERE q.tsquery IS NOT NULL
           AND numnode(q.tsquery) > 0
-          AND (
-            to_tsvector('simple', c.content) @@ q.tsquery
-            OR to_tsvector('simple', COALESCE(d.title, '') || ' ' || COALESCE(d.source_ref, '')) @@ q.tsquery
-          )
         ORDER BY keyword_score DESC, exact_match_boost DESC, c.id
         LIMIT $3::integer
       ),
@@ -1535,9 +1616,12 @@ export async function executeSimilarityQuery(
       env.QUERY_EXACT_MATCH_BOOST,
       env.QUERY_MAX_CHUNKS_PER_DOCUMENT,
       topK,
-      searchOptions?.allowedKnowledgeBaseIds ?? null
+      searchOptions?.allowedKnowledgeBaseIds ?? null,
+      elasticDocumentCandidateIds,
+      elasticChunkCandidateIds
     ]
   );
+  timings.sqlRetrievalMs = Date.now() - sqlStageStartedAt;
 
   const sqlItems: QueryItem[] = result.rows.map((row) => ({
     chunkId: Number(row.chunk_id),
@@ -1602,6 +1686,7 @@ export async function executeSimilarityQuery(
   const dominantFocusQuery = dominantSearchDocument
     ? buildDocumentFocusQuery(query, `${dominantSearchDocument.title ?? ""} ${dominantSearchDocument.sourceRef}`)
     : query;
+  const refinementStageStartedAt = Date.now();
   const narrativeRefinedItems = dominantDocumentId !== null
     && effectiveSearchOptions.preferDocumentFocus
     && dominantSearchSettings.searchProfile === "narrative"
@@ -1612,6 +1697,7 @@ export async function executeSimilarityQuery(
     : dominantDocumentId !== null && effectiveSearchOptions.preferDocumentFocus
       ? await refineItemsWithinDocument(dominantDocumentId, query, Math.max(topK * 3, 12))
       : [];
+  timings.refinementMs = Date.now() - refinementStageStartedAt;
   const combinedSmartItems = documentRefinedItems.length >= Math.max(3, Math.ceil(topK / 2))
     ? documentRefinedItems
     : documentRefinedItems.length > 0
@@ -1634,10 +1720,14 @@ export async function executeSimilarityQuery(
   const focusFilteredItems = dominantDocumentId !== null && effectiveSearchOptions.requireFocusTerms
     ? filterItemsByFocusTerms(adjacencyBiasedItems, dominantFocusQuery)
     : adjacencyBiasedItems;
+  const expansionStageStartedAt = Date.now();
   const expandedItems = searchOptions?.enableSmallToBig === false
     ? focusFilteredItems.slice(0, topK)
     : await applySmallToBigWithWindow(focusFilteredItems, topK, effectiveSearchOptions.smallToBigWindow);
+  timings.expansionMs = Date.now() - expansionStageStartedAt;
+  const enrichmentStageStartedAt = Date.now();
   const finalItems = await attachOriginalFiles(expandedItems.slice(0, topK));
+  timings.enrichmentMs = Date.now() - enrichmentStageStartedAt;
 
   const sources = buildOpenWebUiSources(finalItems);
 
@@ -1653,6 +1743,20 @@ export async function executeSimilarityQuery(
       ].join(" ")
     : "Answer only from the retrieved excerpts. If they are insufficient, say that clearly.";
 
+  logger.debug({
+    query,
+    topK,
+    candidateK,
+    elasticChunkCandidateCount: elasticChunkCandidates?.length ?? 0,
+    elasticDocumentCandidateCount: elasticDocumentCandidates?.length ?? 0,
+    sqlRowCount: result.rows.length,
+    finalItemCount: finalItems.length,
+    timings: {
+      ...timings,
+      totalMs: Date.now() - startedAt
+    }
+  }, "similarity query completed");
+
   return {
     query,
     model,
@@ -1660,8 +1764,8 @@ export async function executeSimilarityQuery(
     context: finalItems.map((item) => item.content).join("\n\n---\n\n"),
     items: finalItems,
     sources,
-    citations: sources
-    ,mode: "similarity",
+    citations: sources,
+    mode: "similarity",
     answerGuidance
   };
 }
@@ -1829,6 +1933,11 @@ export async function executeSmartSearchQuery(options: {
   documentType?: string;
   sourceTypes?: string[];
   fileTypes?: string[];
+  enableRerank?: boolean;
+  enableSmallToBig?: boolean;
+  preferDocumentFocus?: boolean;
+  preferAdjacentSections?: boolean;
+  requireFocusTerms?: boolean;
   allowedKnowledgeBaseIds?: number[];
 }): Promise<QueryResponse> {
   return executeSimilarityQuery(
@@ -1841,8 +1950,11 @@ export async function executeSmartSearchQuery(options: {
       documentType: options.documentType,
       sourceTypes: options.sourceTypes,
       fileTypes: options.fileTypes,
-      enableRerank: true,
-      enableSmallToBig: true,
+      enableRerank: options.enableRerank ?? true,
+      enableSmallToBig: options.enableSmallToBig ?? true,
+      preferDocumentFocus: options.preferDocumentFocus,
+      preferAdjacentSections: options.preferAdjacentSections,
+      requireFocusTerms: options.requireFocusTerms,
       allowedKnowledgeBaseIds: options.allowedKnowledgeBaseIds
     }
   );
@@ -1928,7 +2040,7 @@ export async function executeDocumentContextQuery(options: {
         d.metadata AS document_metadata,
         CASE
           WHEN qs.tsquery IS NULL THEN 0
-          ELSE ts_rank_cd(to_tsvector('simple', c.content), qs.tsquery)
+          ELSE ts_rank_cd(c.search_content_tsv, qs.tsquery)
         END AS keyword_score
       FROM selected_document d
       INNER JOIN document_chunks c ON c.document_id = d.id
@@ -1971,7 +2083,7 @@ export async function executeDocumentContextQuery(options: {
 
   return {
     query: trimmedQuery || trimmedSourceRef || String(options.documentId),
-    model: env.EMBEDDING_MODEL,
+    model: await getEmbeddingModelName(),
     topK: maxChunks,
     context: items.map((item) => item.content).join("\n\n---\n\n"),
     items,
@@ -2402,28 +2514,30 @@ export function createApiRouter(schedulerService: SchedulerService) {
   router.get("/status", async (_request, response, next) => {
     try {
       const counts = await getCounts();
-      let ollamaReachable = false;
-      let ollamaError: string | null = null;
+      let aiProviderReachable = false;
+      let aiProviderError: string | null = null;
       const elasticsearch = await searchIndexService.checkHealth();
       const elasticsearchIndices = elasticsearch.reachable
         ? await searchIndexService.getIndexStats()
         : null;
+      const aiProviderSettings = await getAiProviderSettings();
+      const aiProviderConnection = await getAiProviderConnection();
 
       try {
-        await axios.get(`${env.OLLAMA_BASE_URL}/api/tags`, { timeout: 5_000 });
-        ollamaReachable = true;
+        await checkAiProviderReachable(aiProviderConnection, 5_000);
+        aiProviderReachable = true;
       } catch (error) {
-        ollamaError = error instanceof Error ? error.message : "unknown error";
+        aiProviderError = error instanceof Error ? error.message : "unknown error";
       }
 
       response.json({
         counts,
         config: {
-          ollamaBaseUrl: env.OLLAMA_BASE_URL,
-          embeddingModel: env.EMBEDDING_MODEL,
-          llmModel: env.LLM_MODEL,
-          documentClassifierOllamaBaseUrl: env.DOCUMENT_CLASSIFIER_OLLAMA_BASE_URL ?? env.OLLAMA_BASE_URL,
-          documentClassifierModel: env.DOCUMENT_CLASSIFIER_MODEL,
+          aiProvider: aiProviderSettings.provider,
+          ollamaBaseUrl: aiProviderSettings.baseUrl,
+          embeddingModel: aiProviderSettings.embeddingModel,
+          llmModel: aiProviderSettings.summaryModel,
+          documentClassifierModel: aiProviderSettings.classifierModel,
           documentTypeCount: getEnabledDocumentTypeSettingsSnapshot().length,
           importDir: env.IMPORT_DIR,
           gitRepoCacheDir: env.GIT_REPO_CACHE_DIR,
@@ -2431,8 +2545,8 @@ export function createApiRouter(schedulerService: SchedulerService) {
           elasticsearchUrl: env.ELASTICSEARCH_URL ?? null,
           elasticsearchIndexPrefix: env.ELASTICSEARCH_INDEX_PREFIX
         },
-        ollamaReachable,
-        ollamaError,
+        ollamaReachable: aiProviderReachable,
+        ollamaError: aiProviderError,
         elasticsearch: {
           ...elasticsearch,
           indices: elasticsearchIndices
@@ -2443,35 +2557,40 @@ export function createApiRouter(schedulerService: SchedulerService) {
     }
   });
 
-  router.get("/config", (_request, response) => {
-    response.json({
-      port: env.PORT,
-      ollamaBaseUrl: env.OLLAMA_BASE_URL,
-      embeddingModel: env.EMBEDDING_MODEL,
-      llmModel: env.LLM_MODEL,
-      documentClassifierOllamaBaseUrl: env.DOCUMENT_CLASSIFIER_OLLAMA_BASE_URL ?? env.OLLAMA_BASE_URL,
-      documentClassifierModel: env.DOCUMENT_CLASSIFIER_MODEL,
-      documentTypeCount: getEnabledDocumentTypeSettingsSnapshot().length,
-      embeddingDimension: env.EMBEDDING_DIMENSION,
-      queryTopK: env.QUERY_TOP_K,
-      queryCandidateK: env.QUERY_CANDIDATE_K,
-      queryMaxChunksPerDocument: env.QUERY_MAX_CHUNKS_PER_DOCUMENT,
-      queryVectorWeight: env.QUERY_VECTOR_WEIGHT,
-      queryKeywordWeight: env.QUERY_KEYWORD_WEIGHT,
-      queryExactMatchBoost: env.QUERY_EXACT_MATCH_BOOST,
-      queryRerankTopN: env.QUERY_RERANK_TOP_N,
-      querySmallToBigWindow: env.QUERY_SMALL_TO_BIG_WINDOW,
-      chunkSize: env.CHUNK_SIZE,
-      chunkOverlap: env.CHUNK_OVERLAP,
-      importDir: env.IMPORT_DIR,
-      uploadDir: env.UPLOAD_DIR,
-      originalStorageDir: env.ORIGINAL_STORAGE_DIR,
-      gitRepoCacheDir: env.GIT_REPO_CACHE_DIR,
-      gitRepoMaxFileBytes: env.GIT_REPO_MAX_FILE_BYTES,
-      elasticsearchUrl: env.ELASTICSEARCH_URL ?? null,
-      elasticsearchIndexPrefix: env.ELASTICSEARCH_INDEX_PREFIX,
-      publicBaseUrl: env.PUBLIC_BASE_URL ?? null
-    });
+  router.get("/config", async (_request, response, next) => {
+    try {
+      const aiProviderSettings = await getAiProviderSettings();
+      response.json({
+        port: env.PORT,
+        aiProvider: aiProviderSettings.provider,
+        ollamaBaseUrl: aiProviderSettings.baseUrl,
+        embeddingModel: aiProviderSettings.embeddingModel,
+        llmModel: aiProviderSettings.summaryModel,
+        documentClassifierModel: aiProviderSettings.classifierModel,
+        documentTypeCount: getEnabledDocumentTypeSettingsSnapshot().length,
+        embeddingDimension: aiProviderSettings.embeddingDimension,
+        queryTopK: env.QUERY_TOP_K,
+        queryCandidateK: env.QUERY_CANDIDATE_K,
+        queryMaxChunksPerDocument: env.QUERY_MAX_CHUNKS_PER_DOCUMENT,
+        queryVectorWeight: env.QUERY_VECTOR_WEIGHT,
+        queryKeywordWeight: env.QUERY_KEYWORD_WEIGHT,
+        queryExactMatchBoost: env.QUERY_EXACT_MATCH_BOOST,
+        queryRerankTopN: env.QUERY_RERANK_TOP_N,
+        querySmallToBigWindow: env.QUERY_SMALL_TO_BIG_WINDOW,
+        chunkSize: env.CHUNK_SIZE,
+        chunkOverlap: env.CHUNK_OVERLAP,
+        importDir: env.IMPORT_DIR,
+        uploadDir: env.UPLOAD_DIR,
+        originalStorageDir: env.ORIGINAL_STORAGE_DIR,
+        gitRepoCacheDir: env.GIT_REPO_CACHE_DIR,
+        gitRepoMaxFileBytes: env.GIT_REPO_MAX_FILE_BYTES,
+        elasticsearchUrl: env.ELASTICSEARCH_URL ?? null,
+        elasticsearchIndexPrefix: env.ELASTICSEARCH_INDEX_PREFIX,
+        publicBaseUrl: env.PUBLIC_BASE_URL ?? null
+      });
+    } catch (error) {
+      next(error);
+    }
   });
 
   router.get("/admin/knowledge-bases", async (_request, response, next) => {
@@ -2670,6 +2789,16 @@ export function createApiRouter(schedulerService: SchedulerService) {
                 ? request.body.searchSettings.smallToBigWindow
                 : undefined
             }
+          : undefined,
+        chunkingSettings: request.body.chunkingSettings && typeof request.body.chunkingSettings === "object"
+          ? {
+              chunkSize: request.body.chunkingSettings.chunkSize === null || typeof request.body.chunkingSettings.chunkSize === "number"
+                ? request.body.chunkingSettings.chunkSize
+                : undefined,
+              overlap: request.body.chunkingSettings.overlap === null || typeof request.body.chunkingSettings.overlap === "number"
+                ? request.body.chunkingSettings.overlap
+                : undefined
+            }
           : undefined
       });
 
@@ -2778,6 +2907,180 @@ export function createApiRouter(schedulerService: SchedulerService) {
         force
       });
     } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/admin/embeddings/reembed", async (request, response, next) => {
+    try {
+      if (!response.locals.isAdminAuthenticated) {
+        response.status(401).json({ error: "admin authentication required" });
+        return;
+      }
+
+      const activeAiProviderSettings = await getAiProviderSettings();
+      const targetModel = typeof request.body.targetModel === "string" && request.body.targetModel.trim()
+        ? request.body.targetModel.trim()
+        : activeAiProviderSettings.embeddingModel;
+      const requestedDimension = Number(request.body.targetDimension ?? activeAiProviderSettings.embeddingDimension);
+      const targetDimension = Number.isFinite(requestedDimension) && requestedDimension > 0
+        ? Math.floor(requestedDimension)
+        : activeAiProviderSettings.embeddingDimension;
+      const requestedBatchSize = Number(request.body.batchSize ?? 50);
+      const batchSize = Number.isFinite(requestedBatchSize) && requestedBatchSize > 0
+        ? Math.min(Math.floor(requestedBatchSize), 500)
+        : 50;
+
+      const job = await reembedQueue.add("reembed", { targetModel, targetDimension, batchSize });
+      response.status(202).json({ jobId: job.id, targetModel, targetDimension, batchSize });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/admin/embeddings/pending-status", async (_request, response, next) => {
+    try {
+      if (!response.locals.isAdminAuthenticated) {
+        response.status(401).json({ error: "admin authentication required" });
+        return;
+      }
+
+      const counts = await pool.query<{ embedding_status: string; count: string }>(
+        `
+          SELECT embedding_status, COUNT(*)::bigint AS count
+          FROM document_chunks
+          GROUP BY embedding_status
+        `
+      );
+
+      let pending = 0;
+      let completed = 0;
+      let failed = 0;
+      for (const row of counts.rows) {
+        const value = Number(row.count);
+        if (row.embedding_status === "pending") {
+          pending = value;
+        } else if (row.embedding_status === "completed") {
+          completed = value;
+        } else if (row.embedding_status === "failed") {
+          failed = value;
+        }
+      }
+
+      response.json({ pending, completed, failed, total: pending + completed + failed });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/admin/ai-provider/settings", async (_request, response, next) => {
+    try {
+      if (!response.locals.isAdminAuthenticated) {
+        response.status(401).json({ error: "admin authentication required" });
+        return;
+      }
+
+      response.json(await getAiProviderSettings());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/admin/ai-provider/models", async (request, response, next) => {
+    try {
+      if (!response.locals.isAdminAuthenticated) {
+        response.status(401).json({ error: "admin authentication required" });
+        return;
+      }
+
+      const provider = String(request.query.provider ?? "").trim().toLowerCase();
+      const baseUrl = String(request.query.baseUrl ?? "").trim();
+      const apiKey = typeof request.query.apiKey === "string" ? request.query.apiKey.trim() : "";
+
+      if (provider !== "ollama" && provider !== "openai") {
+        response.status(400).json({ error: "provider must be 'ollama' or 'openai'" });
+        return;
+      }
+      if (!baseUrl) {
+        response.status(400).json({ error: "baseUrl must not be empty" });
+        return;
+      }
+
+      let connection: AiProviderConnection;
+      if (apiKey) {
+        connection = { provider: provider as AiProvider, baseUrl, apiKey };
+      } else {
+        const stored = await getAiProviderConnection();
+        const useStoredKey = stored.provider === provider && stored.baseUrl === baseUrl;
+        connection = { provider: provider as AiProvider, baseUrl, apiKey: useStoredKey ? stored.apiKey : null };
+      }
+
+      const models = await listAiProviderModels(connection);
+      response.json({ models });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.patch("/admin/ai-provider/settings", async (request, response, next) => {
+    try {
+      if (!response.locals.isAdminAuthenticated) {
+        response.status(401).json({ error: "admin authentication required" });
+        return;
+      }
+
+      const body = request.body ?? {};
+      const provider = String(body.provider ?? "").trim().toLowerCase();
+      if (provider !== "ollama" && provider !== "openai") {
+        response.status(400).json({ error: "provider must be 'ollama' or 'openai'" });
+        return;
+      }
+
+      const baseUrl = String(body.baseUrl ?? "").trim();
+      const apiKey = typeof body.apiKey === "string" ? body.apiKey : null;
+      const embeddingModel = String(body.embeddingModel ?? "").trim();
+      const summaryModel = String(body.summaryModel ?? "").trim();
+      const classifierModel = String(body.classifierModel ?? "").trim();
+
+      const current = await getAiProviderSettings();
+
+      let embeddingDimension = current.embeddingDimension;
+      if (embeddingModel !== current.embeddingModel || provider !== current.provider || baseUrl !== current.baseUrl) {
+        const trimmedApiKey = apiKey && apiKey.trim() ? apiKey.trim() : null;
+        const sameConnectionAsStored = provider === current.provider && baseUrl === current.baseUrl;
+        const effectiveApiKey = trimmedApiKey ?? (sameConnectionAsStored ? (await getAiProviderConnection()).apiKey ?? null : null);
+        const connectionForProbe: AiProviderConnection = { provider: provider as AiProvider, baseUrl, apiKey: effectiveApiKey };
+
+        const vectorService = new VectorService();
+        const probedDimension = await vectorService.probeEmbeddingDimension(connectionForProbe, embeddingModel);
+
+        if (embeddingModel !== current.embeddingModel && probedDimension !== current.embeddingDimension) {
+          response.status(409).json({
+            error: `Modell "${embeddingModel}" liefert Embeddings der Dimension ${probedDimension}, gespeichert sind jedoch Chunks mit Dimension ${current.embeddingDimension}. Ein Modellwechsel mit anderer Dimension erfordert eine manuelle Schema-Migration (ALTER TABLE document_chunks ALTER COLUMN embedding TYPE VECTOR(n)) und ein vollständiges Re-Embedding aller Dokumente.`
+          });
+          return;
+        }
+
+        embeddingDimension = probedDimension;
+      }
+
+      const input: UpdateAiProviderSettingsInput = {
+        provider: provider as AiProvider,
+        baseUrl,
+        apiKey,
+        embeddingModel,
+        summaryModel,
+        classifierModel,
+        embeddingDimension
+      };
+
+      const updated = await updateAiProviderSettings(input);
+      response.json(updated);
+    } catch (error) {
+      if (error instanceof Error && /must not be empty|must be a positive number|API key is required/.test(error.message)) {
+        response.status(400).json({ error: error.message });
+        return;
+      }
       next(error);
     }
   });
@@ -2972,6 +3275,7 @@ export function createApiRouter(schedulerService: SchedulerService) {
             state: job.finishedOn ? "completed" : job.failedReason ? "failed" : job.processedOn ? "active" : "waiting",
             data: job.data,
             failedReason: job.failedReason,
+            stacktrace: Array.isArray(job.stacktrace) ? job.stacktrace : [],
             timestamp: job.timestamp,
             finishedOn: job.finishedOn ?? null
           }))
@@ -3811,7 +4115,7 @@ export function createApiRouter(schedulerService: SchedulerService) {
         topK: normalizeTopK(request.body.topK ?? env.QUERY_TOP_K),
         model: typeof request.body.model === "string" && request.body.model.trim()
           ? request.body.model.trim()
-          : env.EMBEDDING_MODEL,
+          : await getEmbeddingModelName(),
         category: typeof request.body.category === "string" ? request.body.category : undefined,
         documentType: typeof request.body.documentType === "string" ? request.body.documentType : undefined,
         sourceTypes: Array.isArray(request.body.sourceTypes) ? request.body.sourceTypes.filter((value: unknown): value is string => typeof value === "string") : undefined,

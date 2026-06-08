@@ -12,6 +12,12 @@ export interface DocumentTypeSearchSettings {
   smallToBigWindow: number;
 }
 
+// `null` means "inherit the global default" (env.CHUNK_SIZE / env.CHUNK_OVERLAP).
+export interface DocumentTypeChunkingSettings {
+  chunkSize: number | null;
+  overlap: number | null;
+}
+
 export interface DocumentTypeSetting {
   key: string;
   label: string;
@@ -24,6 +30,7 @@ export interface DocumentTypeSetting {
   enabled: boolean;
   priority: number;
   searchSettings: DocumentTypeSearchSettings;
+  chunkingSettings: DocumentTypeChunkingSettings;
 }
 
 interface DocumentTypeSettingRow {
@@ -44,6 +51,8 @@ interface DocumentTypeSettingRow {
   prefer_adjacent_sections: boolean;
   adjacent_section_window: number;
   small_to_big_window: number;
+  chunk_size: number | null;
+  chunk_overlap: number | null;
 }
 
 function createSearchSettings(overrides: Partial<DocumentTypeSearchSettings> = {}): DocumentTypeSearchSettings {
@@ -55,6 +64,13 @@ function createSearchSettings(overrides: Partial<DocumentTypeSearchSettings> = {
     preferAdjacentSections: overrides.preferAdjacentSections ?? false,
     adjacentSectionWindow: overrides.adjacentSectionWindow ?? 1,
     smallToBigWindow: overrides.smallToBigWindow ?? 1
+  };
+}
+
+function createChunkingSettings(overrides: Partial<DocumentTypeChunkingSettings> = {}): DocumentTypeChunkingSettings {
+  return {
+    chunkSize: overrides.chunkSize ?? null,
+    overlap: overrides.overlap ?? null
   };
 }
 
@@ -78,7 +94,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferAdjacentSections: true,
       adjacentSectionWindow: 1,
       smallToBigWindow: 1
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "paper",
@@ -99,7 +116,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferAdjacentSections: true,
       adjacentSectionWindow: 1,
       smallToBigWindow: 1
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "api_reference",
@@ -120,7 +138,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferAdjacentSections: false,
       adjacentSectionWindow: 0,
       smallToBigWindow: 0
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "documentation",
@@ -141,7 +160,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferAdjacentSections: true,
       adjacentSectionWindow: 1,
       smallToBigWindow: 1
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "manual",
@@ -162,7 +182,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferAdjacentSections: true,
       adjacentSectionWindow: 1,
       smallToBigWindow: 1
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "runbook",
@@ -183,7 +204,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferAdjacentSections: true,
       adjacentSectionWindow: 1,
       smallToBigWindow: 1
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "policy",
@@ -204,7 +226,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferAdjacentSections: true,
       adjacentSectionWindow: 1,
       smallToBigWindow: 1
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "contract",
@@ -225,7 +248,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferAdjacentSections: true,
       adjacentSectionWindow: 1,
       smallToBigWindow: 1
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "invoice",
@@ -244,7 +268,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferDocumentFocus: true,
       requireFocusTerms: true,
       smallToBigWindow: 0
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "ticket",
@@ -265,7 +290,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferAdjacentSections: true,
       adjacentSectionWindow: 1,
       smallToBigWindow: 1
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "email",
@@ -286,7 +312,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferAdjacentSections: false,
       adjacentSectionWindow: 0,
       smallToBigWindow: 0
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "changelog",
@@ -307,7 +334,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferAdjacentSections: true,
       adjacentSectionWindow: 1,
       smallToBigWindow: 1
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "config",
@@ -326,7 +354,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferDocumentFocus: true,
       requireFocusTerms: true,
       smallToBigWindow: 0
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "source_code",
@@ -347,7 +376,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferAdjacentSections: false,
       adjacentSectionWindow: 0,
       smallToBigWindow: 0
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "book",
@@ -368,7 +398,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferAdjacentSections: true,
       adjacentSectionWindow: 3,
       smallToBigWindow: 2
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "web",
@@ -389,7 +420,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
       preferAdjacentSections: true,
       adjacentSectionWindow: 1,
       smallToBigWindow: 1
-    })
+    }),
+    chunkingSettings: createChunkingSettings()
   },
   {
     key: "generic",
@@ -402,7 +434,8 @@ const DEFAULT_DOCUMENT_TYPE_SETTINGS: DocumentTypeSetting[] = [
     fileTypeHints: [],
     enabled: true,
     priority: 999,
-    searchSettings: createSearchSettings()
+    searchSettings: createSearchSettings(),
+    chunkingSettings: createChunkingSettings()
   }
 ];
 
@@ -459,6 +492,37 @@ function normalizeSearchSettings(value: Partial<DocumentTypeSearchSettings> | un
   };
 }
 
+// `undefined` means "field not part of this update - keep the existing value";
+// `null`/empty means "explicitly cleared - inherit the global default" and
+// must NOT be conflated with "not provided", otherwise an override could never
+// be cleared again once set.
+function normalizeNullableInteger(value: unknown, fallback: number | null, min: number, max: number): number | null {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (value === null || value === "") {
+    return null;
+  }
+
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+
+  return Math.max(min, Math.min(Math.floor(numeric), max));
+}
+
+function normalizeChunkingSettings(
+  value: Partial<DocumentTypeChunkingSettings> | undefined,
+  fallback?: DocumentTypeChunkingSettings
+): DocumentTypeChunkingSettings {
+  return {
+    chunkSize: normalizeNullableInteger(value?.chunkSize, fallback?.chunkSize ?? null, 50, 2000),
+    overlap: normalizeNullableInteger(value?.overlap, fallback?.overlap ?? null, 0, 500)
+  };
+}
+
 function normalizeRecord(row: DocumentTypeSettingRow): DocumentTypeSetting {
   return {
     key: row.key.trim().toLowerCase(),
@@ -481,6 +545,10 @@ function normalizeRecord(row: DocumentTypeSettingRow): DocumentTypeSetting {
     }, {
       ...createSearchSettings(),
       searchProfile: normalizeSearchProfile(row.search_profile)
+    }),
+    chunkingSettings: normalizeChunkingSettings({
+      chunkSize: row.chunk_size,
+      overlap: row.chunk_overlap
     })
   };
 }
@@ -505,9 +573,9 @@ async function seedDefaults() {
         INSERT INTO document_type_settings (
           key, label, description, category, prompt_hint, keywords, source_type_hints, file_type_hints, enabled, priority,
           search_profile, prefer_content_matches, prefer_document_focus, require_focus_terms, prefer_adjacent_sections,
-          adjacent_section_window, small_to_big_window
+          adjacent_section_window, small_to_big_window, chunk_size, chunk_overlap
         )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         ON CONFLICT (key) DO NOTHING
       `,
       [
@@ -527,7 +595,9 @@ async function seedDefaults() {
         setting.searchSettings.requireFocusTerms,
         setting.searchSettings.preferAdjacentSections,
         setting.searchSettings.adjacentSectionWindow,
-        setting.searchSettings.smallToBigWindow
+        setting.searchSettings.smallToBigWindow,
+        setting.chunkingSettings.chunkSize,
+        setting.chunkingSettings.overlap
       ]
     );
   }
@@ -548,7 +618,7 @@ export async function ensureDocumentTypeSettingsLoaded(force = false): Promise<D
       `
         SELECT key, label, description, category, prompt_hint, keywords, source_type_hints, file_type_hints, enabled, priority,
                search_profile, prefer_content_matches, prefer_document_focus, require_focus_terms, prefer_adjacent_sections,
-               adjacent_section_window, small_to_big_window
+               adjacent_section_window, small_to_big_window, chunk_size, chunk_overlap
         FROM document_type_settings
         ORDER BY priority ASC, key ASC
       `
@@ -644,7 +714,8 @@ export async function updateDocumentTypeSetting(
     fileTypeHints: input.fileTypeHints ? normalizeStringArray(input.fileTypeHints) : existing.fileTypeHints,
     enabled: typeof input.enabled === "boolean" ? input.enabled : existing.enabled,
     priority: typeof input.priority === "number" && Number.isFinite(input.priority) ? Math.max(1, Math.min(Math.floor(input.priority), 9999)) : existing.priority,
-    searchSettings: normalizeSearchSettings(input.searchSettings, existing.searchSettings)
+    searchSettings: normalizeSearchSettings(input.searchSettings, existing.searchSettings),
+    chunkingSettings: normalizeChunkingSettings(input.chunkingSettings, existing.chunkingSettings)
   };
 
   await pool.query(
@@ -666,6 +737,8 @@ export async function updateDocumentTypeSetting(
           prefer_adjacent_sections = $15,
           adjacent_section_window = $16,
           small_to_big_window = $17,
+          chunk_size = $18,
+          chunk_overlap = $19,
           updated_at = NOW()
       WHERE key = $1
     `,
@@ -686,7 +759,9 @@ export async function updateDocumentTypeSetting(
       next.searchSettings.requireFocusTerms,
       next.searchSettings.preferAdjacentSections,
       next.searchSettings.adjacentSectionWindow,
-      next.searchSettings.smallToBigWindow
+      next.searchSettings.smallToBigWindow,
+      next.chunkingSettings.chunkSize,
+      next.chunkingSettings.overlap
     ]
   );
 

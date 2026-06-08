@@ -339,7 +339,11 @@ async function createRagMcpServer(principal?: AuthenticatedMcpPrincipal | null) 
         category: args.category,
         documentType: args.documentType,
         sourceTypes: args.sourceTypes,
-        fileTypes: args.fileTypes
+        fileTypes: args.fileTypes,
+        enableSmallToBig: false,
+        preferDocumentFocus: false,
+        preferAdjacentSections: false,
+        requireFocusTerms: false
       }));
 
       return {

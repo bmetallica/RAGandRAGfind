@@ -1,9 +1,9 @@
-import axios from "axios";
 import { pool } from "../db/pool";
-import { env } from "../config/env";
 import { inferDocumentType } from "./documentService";
 import { logger } from "../utils/logger";
 import { searchIndexService } from "./searchIndexService";
+import { requestGeneration } from "./aiProviderClient";
+import { getAiProviderConnection, getClassifierModelName } from "./aiProviderSettingsService";
 import {
   ensureDocumentTypeSettingsLoaded,
   getEnabledDocumentTypeSettingsSnapshot,
@@ -12,10 +12,6 @@ import {
 
 type DocumentType = string;
 type ClassificationConfidence = "low" | "medium" | "high";
-
-interface OllamaGenerateResponse {
-  response?: string;
-}
 
 interface ClassificationResult {
   documentType: DocumentType;
@@ -133,8 +129,8 @@ export class DocumentClassificationService {
     fallbackDocumentType: string;
   }): Promise<ClassificationResult> {
     await ensureDocumentTypeSettingsLoaded();
-    const baseUrl = env.DOCUMENT_CLASSIFIER_OLLAMA_BASE_URL ?? env.OLLAMA_BASE_URL;
-    const model = env.DOCUMENT_CLASSIFIER_MODEL;
+    const connection = await getAiProviderConnection();
+    const model = await getClassifierModelName();
     const excerpt = input.text.slice(0, 12_000);
     const enabledDocumentTypes = getEnabledDocumentTypeSettingsSnapshot();
     const allowedDocumentTypes = enabledDocumentTypes.map((setting) => setting.key);
@@ -161,27 +157,7 @@ export class DocumentClassificationService {
       excerpt
     ].join("\n");
 
-    const response = await axios.post<OllamaGenerateResponse>(
-      `${baseUrl}/api/generate`,
-      {
-        model,
-        prompt,
-        format: "json",
-        stream: false,
-        options: {
-          temperature: 0.1
-        }
-      },
-      {
-        timeout: 90_000
-      }
-    );
-
-    const raw = response.data.response?.trim();
-    if (!raw) {
-      throw new Error("empty response from document classifier");
-    }
-
+    const raw = await requestGeneration(connection, prompt, model, { jsonResponse: true, timeoutMs: 90_000 });
     const parsed = extractJsonObject(raw);
     const documentType = normalizeDocumentTypeKey(parsed.documentType, normalizeDocumentTypeKey(input.fallbackDocumentType, "generic"));
     const traits = Array.isArray(parsed.traits)
@@ -195,7 +171,7 @@ export class DocumentClassificationService {
       rationale: typeof parsed.rationale === "string" ? parsed.rationale.trim().slice(0, 400) : "",
       traits,
       model,
-      baseUrl
+      baseUrl: connection.baseUrl
     };
   }
 

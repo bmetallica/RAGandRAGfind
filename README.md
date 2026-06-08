@@ -67,6 +67,8 @@ Es kombiniert:
 - Extraktion für PDF, DOCX, ODT, TXT, Markdown, HTML, JSON, YAML, SQL, JS, TS, Python, Shell-Skripte und andere Text-/Code-Formate
 - OCR-Fallback mit Tesseract und Ghostscript, wenn direkte Extraktion nicht ausreicht
 - SHA-256-Deduplizierung vor Chunk- und Vektorpersistenz
+- typabhängiges Chunking: die Ollama-Klassifizierung läuft vor dem Chunking und bestimmt sowohl den gespeicherten Dokumenttyp als auch Chunk-Größe und -Overlap (pro Typ in den Dokumenttyp-Einstellungen überschreibbar, sonst globaler Default)
+- Embedding läuft vollständig asynchron im Hintergrund: Chunks werden sofort als `pending` persistiert, sind direkt über Volltext-/Trigram-Suche auffindbar und werden von einem separaten Worker eingebettet, sobald Ollama erreichbar ist — die Ingestion-Transaktion hält dabei nie auf einen Ollama-Roundtrip
 
 ### Retrieval
 
@@ -107,7 +109,7 @@ Es kombiniert:
 - Knowledge-Base-CRUD im Admin-UI
 - MCP-Principal-Verwaltung mit KB-Scope
 - Admin-User-Verwaltung und Passwortwechsel-Flow
-- editierbare Dokumenttyp-Einstellungen für Heuristik, Klassifikation und Smart Search
+- editierbare Dokumenttyp-Einstellungen für Heuristik, Klassifikation, Smart Search sowie pro Typ überschreibbare Chunk-Größe und Chunk-Overlap (leer = globaler Default)
 - konfigurierbarer Knowledge-Base-Scope für `RAGfind`
 
 ## Architektur
@@ -126,10 +128,10 @@ Primärer Ingestion-Flow:
 
 1. Text aus Uploads, Syncs, Crawls oder Git-Inhalten extrahieren
 2. bei unzureichender Extraktion auf OCR zurückfallen
-3. Inhalte normalisieren und in Chunks zerlegen
-4. Embeddings über Ollama erzeugen
-5. Dokumente, Chunks, Sections, Originaldatei-Metadaten und Analyse-Artefakte in PostgreSQL persistieren
-6. Retrieval über HTTP, Admin-UI, MCP und `RAGfind` bereitstellen
+3. Inhalte normalisieren und per Ollama klassifizieren — das Klassifikationsergebnis bestimmt sowohl den gespeicherten Dokumenttyp als auch die für diesen Typ konfigurierten (oder globalen) Chunk-Größen-/Overlap-Parameter
+4. Inhalte anhand dieser Parameter in Chunks zerlegen und zusammen mit Dokumenten, Sections, Originaldatei-Metadaten und Analyse-Artefakten in PostgreSQL persistieren — Chunks erhalten zunächst `embedding_status = 'pending'` und sind sofort über Volltext- und Trigram-Suche auffindbar
+5. Embeddings werden danach asynchron von einem Hintergrund-Worker erzeugt: ein Health-Check wartet auf einen erreichbaren Ollama-Endpunkt, transiente Fehler (Verbindungsabbruch, Timeout, 5xx) werden mit Backoff unbegrenzt wiederholt, permanente Konfigurationsfehler (z. B. Dimension-Mismatch) markieren die betroffenen Chunks sofort als `failed`, statt die Queue zu blockieren
+6. Retrieval über HTTP, Admin-UI, MCP und `RAGfind` bereitstellen — der Live-Fortschritt des Embedding-Backlogs ist im Admin-Dashboard sichtbar (siehe „Dashboard und Admin-UI")
 
 ## Repository-Struktur
 
@@ -169,8 +171,7 @@ cp .env.example .env
 
 2. Mindestens diese Werte anpassen:
 
-- `OLLAMA_BASE_URL`
-- optional `DOCUMENT_CLASSIFIER_OLLAMA_BASE_URL`
+- `OLLAMA_BASE_URL` (Seed-Wert; die laufende KI-Provider-Konfiguration wird danach im Admin-UI unter „Config-AI" verwaltet)
 - optional `PUBLIC_BASE_URL`
 
 3. Gesamten Stack bauen und starten.
@@ -251,12 +252,11 @@ Kernservices:
 - `REDIS_URL`: Redis-Connection-String
 - `PUBLIC_BASE_URL`: Basis für erzeugte Download-Links und externe Referenzen
 
-LLM und Embeddings:
+LLM und Embeddings (nur Seed-Werte für die Erstinstallation - die dauerhafte Konfiguration erfolgt danach im Admin-UI unter „Config-AI", siehe unten):
 
 - `OLLAMA_BASE_URL`
 - `EMBEDDING_MODEL`
 - `LLM_MODEL`
-- `DOCUMENT_CLASSIFIER_OLLAMA_BASE_URL`
 - `DOCUMENT_CLASSIFIER_MODEL`
 - `EMBEDDING_DIMENSION`
 
@@ -289,19 +289,19 @@ Die aktuellen Defaults stehen in `.env.example`.
 
 ## Dashboard und Admin-UI
 
-Die Admin-Konsole auf Port `3311` enthält aktuell:
+Die Admin-Konsole auf Port `3311` ist über ein Navigationsmenü mit sieben Bereichen strukturiert (Hash-Routing, also direkt verlinkbar und mit Vor-/Zurück-Navigation des Browsers nutzbar):
 
-- Upload-, Crawl-, Directory-Sync- und Git-Import-Formulare
-- Dokumentbrowser mit Vorschau und Dokumentaktionen
-- Trigger-Oberflächen für Dokumentanalysen
-- Unterstützung für Dokument-Reklassifikation
-- Knowledge-Base-Verwaltung
-- MCP-Principal-Verwaltung
-- Admin-User-Verwaltung
-- Dokumenttyp-Einstellungen
-- `RAGfind`-KB-Auswahl
+- **Übersicht** — Stats, System-Health (Ollama/Elasticsearch/Postgres) und Live-Fortschritt der asynchronen Embedding-Pipeline (Fortschrittsbalken „X / Y Chunks eingebettet" inkl. Hinweis auf fehlgeschlagene Chunks, sobald `failed > 0`)
+- **Ingestion** — Upload-, Crawl-, Directory-Sync-, Schedule- und Git-Import-Formulare, Queue-Jobs und Embedding-Fortschritt
+- **Dokumente** — Dokumentbrowser mit Vorschau, Filterung, Analyse-Werkbank und Unterstützung für Dokument-Reklassifikation
+- **Suche** — RAG-Query-Test gegen den Such-Stack
+- **Wissensbasis & Typen** — Knowledge-Base-Verwaltung, Dokumenttyp-Einstellungen (inkl. typabhängiger Chunk-Größe/-Overlap) und `RAGfind`-KB-Auswahl
+- **System** — MCP-Principal-Verwaltung, Admin-User-Verwaltung, Passwortänderung, Elasticsearch-Operationen, Git-Repository-Import-Status und Laufzeitkonfiguration
+- **Config-AI** — Konfiguration des KI-Providers (Ollama oder eine OpenAI-kompatible API): Server-URL, optionaler API-Key sowie je ein per Dropdown aus den auf dem Server tatsächlich verfügbaren Modellen wählbares Modell für Embedding, Zusammenfassung und Dokumentklassifizierung. Änderungen wirken sofort, ohne Neustart — ein Wechsel des Embedding-Modells wird beim Speichern per Testaufruf auf Dimensionskompatibilität geprüft und bei Konflikt mit einer verständlichen Fehlermeldung abgelehnt (siehe `EMBEDDING_DIMENSION` oben)
 
 Die Admin-Konsole ist die Stelle, an der der Such-Scope für `RAGfind` konfiguriert wird.
+
+Der Embedding-Fortschritt wird per Live-Polling (`GET /api/admin/embeddings/pending-status`) aktualisiert: solange Chunks noch `pending` oder `failed` sind, fragt die Oberfläche den Status alle 5 Sekunden ab und blendet die Anzeige aus, sobald alles eingebettet ist.
 
 ## RAGfind
 
@@ -432,8 +432,11 @@ Für tiefere Produkt- und Retrieval-Notizen siehe:
 Das Repository ist weiterhin in aktiver Entwicklung, die aktuelle Implementierung enthält aber bereits:
 
 - Multi-Source-Ingestion
+- typabhängiges Chunking auf Basis der vorgezogenen Ollama-Klassifizierung
+- vollständig asynchrone Embedding-Pipeline mit Health-Check, fehlerklassifiziertem Retry und Live-Fortschrittsanzeige im Dashboard
 - persistierte Struktur- und Originaldatei-Referenzen
 - Analyse- und Summary-Workflows
 - MCP-Integration
 - wissensdatenbankbewusste Admin-Konfiguration
+- Navigationsbasierte Admin-Oberfläche mit sieben klar getrennten Bereichen
 - separate `RAGfind`-Sucherfahrung mit lokalem Viewer
