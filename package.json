@@ -16,7 +16,10 @@
     "start:ragfind": "node dist/ragfind/server.js",
     "start:worker": "node dist/workers/worker.js",
     "start:mcp:stdio": "node dist/mcp/stdio.js",
-    "migrate": "tsx src/db/runMigrations.ts"
+    "migrate": "tsx src/db/runMigrations.ts",
+    "eval": "tsx src/eval/runEval.ts",
+    "eval:bootstrap": "tsx src/eval/bootstrapGoldenset.ts",
+    "check:provider": "tsx src/tools/checkProvider.ts"
   },
   "dependencies": {
     "@cfworker/json-schema": "^4.1.1",

@@ -2,10 +2,13 @@ import { pool } from "../db/pool";
 import { logger } from "../utils/logger";
 import { VectorService } from "./vectorService";
 import { getAiProviderSettings } from "./aiProviderSettingsService";
+import { EMBEDDING_INPUT_VERSION, buildDocumentEmbeddingInput } from "./embeddingInputService";
 
 interface PendingChunkRow {
   id: number;
   content: string;
+  document_title: string | null;
+  section_title: string | null;
 }
 
 const DEFAULT_BATCH_SIZE = 50;
@@ -25,12 +28,21 @@ export class EmbeddingPendingService {
     let failed = 0;
 
     for (;;) {
+      // Title and section heading come along so the embedding input can carry
+      // them as a context header (see buildDocumentEmbeddingInput). They are NOT
+      // written back into `content` - only the vector sees them.
       const batch = await pool.query<PendingChunkRow>(
         `
-          SELECT id, content
-          FROM document_chunks
-          WHERE embedding_status = 'pending'
-          ORDER BY id ASC
+          SELECT
+            c.id,
+            c.content,
+            d.title AS document_title,
+            s.title AS section_title
+          FROM document_chunks c
+          INNER JOIN documents d ON d.id = c.document_id
+          LEFT JOIN document_sections s ON s.id = c.document_section_id
+          WHERE c.embedding_status = 'pending'
+          ORDER BY c.id ASC
           LIMIT $1
         `,
         [batchSize]
@@ -44,7 +56,13 @@ export class EmbeddingPendingService {
 
       let embeddings: number[][];
       try {
-        embeddings = await this.vectorService.embed(batch.rows.map((row) => row.content));
+        embeddings = await this.vectorService.embedDocuments(
+          batch.rows.map((row) => buildDocumentEmbeddingInput({
+            documentTitle: row.document_title,
+            sectionTitle: row.section_title,
+            content: row.content
+          }))
+        );
       } catch (error) {
         // A permanent/configuration error (dimension or count mismatch) -
         // vectorService already exhausted the transient-retry path before
@@ -76,10 +94,20 @@ export class EmbeddingPendingService {
         await pool.query(
           `
             UPDATE document_chunks
-            SET embedding = $1::vector, embedding_status = 'completed', embedding_model = $2, embedding_dimension = $3
-            WHERE id = $4
+            SET embedding = $1::vector,
+                embedding_status = 'completed',
+                embedding_model = $2,
+                embedding_dimension = $3,
+                embedding_input_version = $4
+            WHERE id = $5
           `,
-          [`[${embeddings[index].join(",")}]`, aiProviderSettings.embeddingModel, aiProviderSettings.embeddingDimension, row.id]
+          [
+            `[${embeddings[index].join(",")}]`,
+            aiProviderSettings.embeddingModel,
+            aiProviderSettings.embeddingDimension,
+            EMBEDDING_INPUT_VERSION,
+            row.id
+          ]
         );
       }
 

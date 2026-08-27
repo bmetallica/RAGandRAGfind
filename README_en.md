@@ -49,7 +49,7 @@ It combines:
 ### Ingestion
 
 - manual uploads
-- import directory sync via mounted folder
+- import directory sync via mounted folder, by default with one subdirectory per knowledge base (see [Directory sync per knowledge base](#directory-sync-per-knowledge-base))
 - recursive website crawling with file download support
 - git repository sync with optional branch and subpath scoping
 - extraction for PDF, DOCX, ODT, TXT, Markdown, HTML, JSON, YAML, SQL, JS, TS, Python, shell scripts, and other text/code formats
@@ -139,6 +139,171 @@ public/ragfind/    RAGfind frontend
 import-dir/        mounted import directory for sync-based ingestion
 scripts/           helper scripts for deployment workflows
 ```
+
+## Directory sync per knowledge base
+
+The directory sync maps every immediate subdirectory of `IMPORT_DIR` to exactly one knowledge
+base, so documents from different knowledge spaces cannot mix. The directory name is the
+knowledge base slug:
+
+```
+import-dir/
+  default/       -> knowledge base "default"
+  contracts/     -> knowledge base "contracts"
+  engineering/   -> knowledge base "engineering"
+```
+
+A sync without an explicitly selected knowledge base works like this:
+
+1. Every enabled knowledge base gets its directory created if it does not exist yet.
+2. Each subdirectory is read recursively and assigned to the knowledge base with that slug.
+3. A subdirectory without a matching knowledge base is created as a new knowledge base
+   (disable via `SYNC_AUTO_CREATE_KNOWLEDGE_BASES=false`; the directory is then skipped and reported in the result).
+4. Files directly in the root directory are assigned to `default`.
+
+If a concrete `knowledgeBaseId` is passed in the admin UI or via `POST /api/jobs/sync`, the previous
+behaviour still applies: the whole tree below the root directory goes into that one knowledge base.
+Set `SYNC_KNOWLEDGE_BASE_SUBDIRS=false` to disable the subdirectory mapping globally.
+
+Deduplication is per knowledge base (`content_hash` + `knowledge_base_id`), so the same file can
+deliberately live in several knowledge bases. The job result in the queue view reports scanned,
+imported, and duplicate counts per knowledge base.
+
+## Measuring retrieval quality
+
+`npm run eval` measures Recall@k, MRR, nDCG@k, and Precision@1 against a goldenset of real
+questions. The run uses the same search path as RAGfind and MCP (`executeSmartSearchQuery`),
+including reranking and small-to-big.
+
+```bash
+cp eval/goldenset.example.json eval/goldenset.json   # or:
+npm run eval:bootstrap                               # template from your own corpus
+# fill in the questions in eval/goldenset.json
+npm run eval -- --tag baseline
+npm run eval -- --tag after --baseline eval/results/baseline.json
+```
+
+Comparing against a baseline reports per-question what improved and what regressed — averages alone
+hide regressions. Details and the planned follow-ups are in `optimierungsplan.md` (German).
+
+`eval/goldenset.json` and `eval/results/` are deliberately not in the repository: they contain
+questions and hit lists from whatever corpus the instance holds.
+
+## German full-text search
+
+Alongside the `simple` tsvector columns there are German variants (`*_tsv_de`, migration 021) with
+Snowball stemming and German stop words, so "Dienstpläne" also matches "Dienstplan". Both are
+queried and the better rank wins — `simple` stays responsible for verbatim matches on file names,
+reference numbers, and identifiers. Elasticsearch mirrors this through a `.de` sub-field using the
+`german_rag` analyzer.
+
+The Elasticsearch indices therefore carry a version suffix (`rag-documents-v2`, `rag-chunks-v2`).
+Run *Reindex starten* in the admin UI once after deploying; the old unsuffixed indices can then be
+deleted.
+
+## Cross-encoder reranking
+
+The top candidates of a search are optionally re-sorted by a reranking model that scores the
+question and the passage together. Configure it in the admin UI under *Config-AI*: base URL, model
+name, and how many candidates (`top_n`) are handed to the reranker. Cost grows linearly with the
+candidate count (measured with Qwen3-Reranker-0.6B: 8 candidates ~740 ms, 12 ~1090 ms, 20 ~1800 ms),
+so the default is 12.
+
+Any server exposing `POST /v1/rerank` (falling back to `/rerank`) in the Cohere/Jina shape works —
+llama.cpp with `--reranking`, TEI, Infinity, and vLLM. Recommended for a German corpus:
+`bge-reranker-v2-m3` or `Qwen3-Reranker-0.6B`.
+
+The reranker sits in the live query path and is guarded accordingly: hard timeout, bounded
+concurrency, and a 30-second cooldown after a failure. When it is off, unreachable, or in cooldown,
+the previous heuristic reranking takes over automatically — search always returns results, at worst
+ordered less well. `crossEncoderRerank` in the debug log and the `rerankMs` stage timing show which
+path each request took.
+
+## Embedding input
+
+What gets embedded is not the raw chunk but a context header built from the document title and
+section heading plus the chunk content, carrying the model's task prefix (`search_document:` /
+`search_query:` for nomic, `passage:` / `query:` for e5 — derived from the model name, overridable
+via `EMBEDDING_DOCUMENT_PREFIX` / `EMBEDDING_QUERY_PREFIX`). The header exists only in the embedding
+input, never in `document_chunks.content`.
+
+`document_chunks.embedding_input_version` records which input shape produced a vector. When that
+shape changes without a model change, a normal re-embedding run finds nothing — use *Re-Embedding
+starten* in the Config-AI section (equivalent to `POST /admin/embeddings/reembed` with
+`{"force": true}`).
+
+## Running with vLLM
+
+vLLM speaks the same OpenAI-compatible API as llama.cpp, LM Studio, or TGI. In the admin UI under
+*Config-AI*, pick provider **OpenAI-kompatibel**, enter the `/v1` path as the base URL (e.g.
+`http://host:8000/v1`), and leave the API key empty — it is optional and only needed when the
+server was started with `--api-key`.
+
+The three roles can run on separate vLLM instances; embedding and LLM share the provider
+configuration, the reranker has its own base URL.
+
+```bash
+# Embeddings
+vllm serve nomic-ai/nomic-embed-text-v1.5 \
+  --served-model-name nomic-embed-text --trust-remote-code \
+  --port 8000 --max-model-len 2048
+
+# Reranker (cross-encoder)
+vllm serve BAAI/bge-reranker-v2-m3 \
+  --served-model-name bge-reranker-v2-m3 --port 8001
+
+# LLM for classification and summarisation
+vllm serve Qwen/Qwen2.5-7B-Instruct --port 8002
+```
+
+The flags that select a model's role differ between vLLM versions (`--task embed` / `--task score`
+in older ones, `--runner pooling` in newer ones). Rather than relying on that, check an endpoint
+directly:
+
+```bash
+npm run check:provider -- \
+  --base-url http://host:8000/v1 \
+  --embedding-model nomic-embed-text \
+  --llm-model Qwen/Qwen2.5-7B-Instruct \
+  --reranker-url http://host:8001 \
+  --reranker-model bge-reranker-v2-m3
+```
+
+The tool runs the application's own client code against the endpoint — model listing, single and
+batch embeddings, dimension, task prefixes, maximum input length, text generation, the JSON
+response the classifier needs, and the rerank endpoint — then prints the values to enter in
+*Config-AI*. It needs no database and changes nothing on the server.
+
+Things to watch:
+
+- **Input length:** on vLLM, `--max-model-len` caps a single input. The checker measures the limit
+  and says whether it covers the chunk sizes this application produces.
+- **Embedding dimension:** if it differs from the existing corpus, run
+  `ALTER TABLE document_chunks ALTER COLUMN embedding TYPE VECTOR(n)` before switching, then a full
+  re-embedding. The admin UI probes the dimension on save and rejects a conflict.
+- **Task prefixes** are derived from the model name. vLLM often reports the full HF path
+  (`nomic-ai/nomic-embed-text-v1.5`), which is recognised; for unusual names use
+  `EMBEDDING_DOCUMENT_PREFIX` / `EMBEDDING_QUERY_PREFIX`.
+- **Structured output:** if a server rejects `response_format: json_object`, the request is retried
+  without it automatically, so classification also works on servers without guided decoding.
+
+## Model server input limits
+
+When the embedding or reranking model runs on llama.cpp, its physical batch size (`ubatch`,
+512 tokens by default) caps the length of a single input. A longer input is rejected with HTTP 500
+and would otherwise fail the whole batch. `CHUNK_SIZE` does not protect against this: it counts
+with `gpt-tokenizer`, while German text encodes roughly twice as densely in the model's own
+tokenizer — 300 "chunk tokens" can be 600 model tokens, and OCR'd tables with run-together words
+more still.
+
+The stack handles this in two stages:
+
+1. `EMBEDDING_MAX_INPUT_CHARS` and `RERANKER_DOCUMENT_MAX_CHARS` cap the input up front.
+2. If the server rejects it anyway, the batch is split, the offending entry is shortened step by
+   step and resent. This is tokenizer-agnostic and keeps working after a model change.
+
+The cleaner fix is to start the server with a larger batch (`llama-server -ub 2048 -b 2048`). The
+truncation paths then never trigger and both embedding and reranking see the full text.
 
 ## Requirements
 

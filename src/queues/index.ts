@@ -33,6 +33,9 @@ export interface ReembedJobPayload {
   targetModel: string;
   targetDimension: number;
   batchSize?: number;
+  // Re-embed chunks whose model already matches but whose embedding input was
+  // built by an older version of the pipeline (see EMBEDDING_INPUT_VERSION).
+  force?: boolean;
 }
 
 // Empty payload - the worker always claims the next pending batch from the DB

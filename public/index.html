@@ -150,7 +150,8 @@
               <label class="mt-4 block text-sm font-medium">Root-Verzeichnis</label>
               <input name="rootDir" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="/app/import-dir" />
               <label class="mt-4 block text-sm font-medium">Wissensdatenbank</label>
-              <select name="knowledgeBaseId" data-knowledge-base-select class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
+              <select name="knowledgeBaseId" data-knowledge-base-select data-allow-auto-knowledge-base class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
+              <p class="mt-2 text-xs text-black/55 dark:text-white/50">Automatisch: jedes Unterverzeichnis des Root-Verzeichnisses ist eine eigene Wissensdatenbank (Ordnername = Slug). Fehlende Ordner werden angelegt, Dateien direkt im Root landen in <code>default</code>. Eine feste Auswahl importiert stattdessen den kompletten Baum in diese eine Wissensdatenbank.</p>
               <button class="mt-5 rounded-full bg-lagoon/90 px-5 py-3 text-sm font-semibold text-graphite transition hover:opacity-90">Sync enqueue</button>
             </form>
 
@@ -480,8 +481,12 @@
 
             <label id="ai-provider-api-key-field" class="block text-sm">
               <span class="mb-1 block font-semibold text-black/70 dark:text-white/70">API-Key</span>
-              <input name="apiKey" id="ai-provider-api-key" type="password" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="sk-..." autocomplete="off" />
+              <input name="apiKey" id="ai-provider-api-key" type="password" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="sk-... (leer lassen bei lokalen Servern)" autocomplete="off" />
               <span id="ai-provider-api-key-hint" class="mt-1 block text-xs text-black/50 dark:text-white/45"></span>
+              <span id="ai-provider-api-key-clear-row" class="mt-2 hidden items-center gap-2 text-xs text-black/55 dark:text-white/50">
+                <input type="checkbox" name="clearApiKey" id="ai-provider-api-key-clear" />
+                <span>Hinterlegten Schl&uuml;ssel entfernen (f&uuml;r Server ohne Authentifizierung)</span>
+              </span>
             </label>
 
             <div class="flex flex-wrap items-center gap-3">
@@ -510,6 +515,44 @@
               (<code>ALTER TABLE document_chunks ALTER COLUMN embedding TYPE VECTOR(n)</code>) und ein vollstaendiges
               Re-Embedding aller Dokumente ueber <code>/admin/embeddings/reembed</code> &mdash; ein solcher Wechsel wird
               beim Speichern automatisch geprueft und bei Dimensionskonflikt abgelehnt.
+            </div>
+
+            <div class="rounded-2xl border border-black/10 bg-cloud/55 px-4 py-3 dark:border-white/10 dark:bg-dusk/65">
+              <label class="flex items-start gap-3 text-sm">
+                <input type="checkbox" name="rerankerEnabled" id="reranker-enabled" class="mt-1" />
+                <span>
+                  <span class="block font-semibold text-black/80 dark:text-white/85">Cross-Encoder-Reranker verwenden</span>
+                  <span class="mt-1 block text-xs text-black/55 dark:text-white/50">
+                    Sortiert die besten Treffer mit einem Reranking-Modell nach (llama.cpp mit <code>--reranking</code>,
+                    TEI, Infinity oder vLLM &mdash; Endpunkt <code>/v1/rerank</code>). Ist der Dienst aus oder nicht
+                    erreichbar, greift automatisch das bisherige heuristische Reranking.
+                  </span>
+                </span>
+              </label>
+              <div class="mt-4 grid gap-4 lg:grid-cols-3">
+                <label class="block text-sm lg:col-span-2">
+                  <span class="mb-1 block font-semibold text-black/70 dark:text-white/70">Reranker-Basis-URL</span>
+                  <input name="rerankerBaseUrl" id="reranker-base-url" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="http://localhost:8080" />
+                </label>
+                <label class="block text-sm">
+                  <span class="mb-1 block font-semibold text-black/70 dark:text-white/70">Kandidaten (top_n)</span>
+                  <input name="rerankerTopN" id="reranker-top-n" type="number" min="1" max="200" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" />
+                </label>
+                <label class="block text-sm lg:col-span-3">
+                  <span class="mb-1 block font-semibold text-black/70 dark:text-white/70">Reranker-Modell</span>
+                  <input name="rerankerModel" id="reranker-model" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Qwen3-Reranker-0.6B" />
+                </label>
+              </div>
+              <div id="reranker-status" class="mt-3 text-xs text-black/55 dark:text-white/50"></div>
+            </div>
+
+            <div class="rounded-2xl border border-black/10 bg-cloud/55 px-4 py-3 text-sm text-black/65 dark:border-white/10 dark:bg-dusk/65 dark:text-white/60">
+              <p>
+                <strong>Re-Embedding erzwingen</strong> &mdash; baut alle Vektoren neu auf, auch wenn das Modell
+                gleich bleibt. Noetig nach einer Aenderung am Embedding-Input (Kontext-Header, Task-Prefix), weil
+                der Modellvergleich diese Aenderung nicht erkennen kann. Laeuft als Hintergrund-Job.
+              </p>
+              <button id="embeddings-force-reembed" type="button" class="mt-3 rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Re-Embedding starten</button>
             </div>
 
             <div class="flex items-center justify-between gap-3">

@@ -9,6 +9,12 @@ pnpm-debug.log*
 
 data/
 import-dir/
+
+# Goldenset und Eval-Laeufe sind installationsspezifisch und enthalten
+# Dateinamen aus dem eigenen Bestand. Als Vorlage dient eval/goldenset.example.json.
+eval/goldenset.json
+eval/goldenset.template.json
+eval/results/
 e up -d --build ingestor-app ingestor-worker
 
 .DS_Store
