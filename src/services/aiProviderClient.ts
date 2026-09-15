@@ -90,8 +90,20 @@ function trimTrailingSlash(value: string): string {
 
 function describeError(baseUrl: string, error: unknown): Error {
   if (axios.isAxiosError(error)) {
-    const detail = error.response?.data ?? error.message;
-    return new Error(`failed to reach AI provider at ${baseUrl}: ${JSON.stringify(detail)}`);
+    // A response means the server WAS reached and answered. Reporting that as
+    // "failed to reach" sends an operator hunting for a network or firewall
+    // problem when the actual fault sits in the model server - a missing
+    // dependency, a model that will not load, a rejected request. Keep the two
+    // apart and surface the upstream message verbatim.
+    if (error.response) {
+      const data = error.response.data as { error?: { message?: string }; message?: string; detail?: string } | string | undefined;
+      const message = typeof data === "string"
+        ? data
+        : data?.error?.message ?? data?.message ?? data?.detail ?? JSON.stringify(data ?? {});
+      return new Error(`AI provider at ${baseUrl} answered HTTP ${error.response.status}: ${message}`);
+    }
+
+    return new Error(`failed to reach AI provider at ${baseUrl}: ${error.message}`);
   }
   return error instanceof Error ? error : new Error(String(error));
 }

@@ -1,4 +1,4 @@
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { env } from "../config/env";
 import { pool } from "../db/pool";
@@ -6,6 +6,7 @@ import { IngestionService } from "./ingestionService";
 import { createKnowledgeBase, normalizeSlug } from "./adminAccessService";
 import { isSupportedDocument } from "../utils/files";
 import { runWithConcurrency } from "../utils/concurrency";
+import { sha256 } from "../utils/hash";
 import { logger } from "../utils/logger";
 
 const DEFAULT_KNOWLEDGE_BASE_SLUG = "default";
@@ -32,6 +33,9 @@ export interface DirectorySyncKnowledgeBaseResult {
   scanned: number;
   imported: number;
   duplicates: number;
+  // Files whose bytes are already stored in this knowledge base - skipped
+  // before extraction, see ingestBucket.
+  unchanged: number;
 }
 
 export interface DirectorySyncResult {
@@ -39,6 +43,7 @@ export interface DirectorySyncResult {
   scanned: number;
   imported: number;
   duplicates: number;
+  unchanged: number;
   knowledgeBases: DirectorySyncKnowledgeBaseResult[];
   skippedDirectories: string[];
 }
@@ -85,6 +90,7 @@ export class DirectorySyncService {
       scanned: results.reduce((total, entry) => total + entry.scanned, 0),
       imported: results.reduce((total, entry) => total + entry.imported, 0),
       duplicates: results.reduce((total, entry) => total + entry.duplicates, 0),
+      unchanged: results.reduce((total, entry) => total + entry.unchanged, 0),
       knowledgeBases: results,
       skippedDirectories: buckets.skippedDirectories
     };
@@ -168,11 +174,23 @@ export class DirectorySyncService {
 
   private async ingestBucket(rootDir: string, bucket: SyncBucket): Promise<DirectorySyncKnowledgeBaseResult> {
     const supportedFiles = bucket.files.filter(isSupportedDocument);
+    const knownFileHashes = await this.loadKnownFileHashes(bucket.knowledgeBase?.id ?? null);
 
     const results = await runWithConcurrency(supportedFiles, env.INGESTION_IO_CONCURRENCY, async (filePath) => {
       const sourceRef = path.relative(rootDir, filePath);
       try {
-        return await this.ingestionService.ingestFile({
+        // Hash the raw bytes BEFORE handing the file to the ingestion service.
+        // `ingestFile` extracts first and only deduplicates on the extracted
+        // text afterwards, so an unchanged scanned PDF would be pushed through
+        // Ghostscript and Tesseract on every scheduled run only to be thrown
+        // away as a duplicate at the end. Reading and hashing the whole import
+        // directory costs about a second; OCR-ing it costs tens of minutes.
+        const fileHash = sha256(await readFile(filePath));
+        if (knownFileHashes.has(fileHash)) {
+          return { unchanged: true as const };
+        }
+
+        const result = await this.ingestionService.ingestFile({
           filePath,
           sourceType: "directory",
           sourceRef,
@@ -183,6 +201,11 @@ export class DirectorySyncService {
             syncDirectory: bucket.directory || null
           }
         });
+
+        // Keep the set current within a run, so the same file appearing twice
+        // in one directory tree is only extracted once.
+        knownFileHashes.add(fileHash);
+        return result;
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         throw new Error(`directory sync failed for file \"${sourceRef}\" (${filePath}): ${reason}`, {
@@ -193,8 +216,11 @@ export class DirectorySyncService {
 
     let imported = 0;
     let duplicates = 0;
+    let unchanged = 0;
     for (const result of results) {
-      if (result.duplicate) {
+      if ("unchanged" in result) {
+        unchanged += 1;
+      } else if (result.duplicate) {
         duplicates += 1;
       } else {
         imported += 1;
@@ -208,8 +234,32 @@ export class DirectorySyncService {
       directory: bucket.directory,
       scanned: bucket.files.length,
       imported,
-      duplicates
+      duplicates,
+      unchanged
     };
+  }
+
+  // sha256 of every original file already stored for this knowledge base.
+  // `document_files.content_hash` is exactly that hash (see persistLocalCopy),
+  // so no extra bookkeeping is needed. One query per bucket rather than one per
+  // file; at corpus sizes where that set gets large, the per-file lookup would
+  // have to move into SQL.
+  private async loadKnownFileHashes(knowledgeBaseId: number | null): Promise<Set<string>> {
+    const result = await pool.query<{ content_hash: string }>(
+      `
+        SELECT DISTINCT df.content_hash
+        FROM document_files df
+        INNER JOIN documents d ON d.id = df.document_id
+        WHERE df.content_hash IS NOT NULL
+          AND (
+            ($1::bigint IS NULL AND d.knowledge_base_id IS NULL)
+            OR d.knowledge_base_id = $1::bigint
+          )
+      `,
+      [knowledgeBaseId]
+    );
+
+    return new Set(result.rows.map((row) => row.content_hash));
   }
 
   // Materialises one directory per enabled knowledge base so an operator can

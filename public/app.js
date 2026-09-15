@@ -330,7 +330,7 @@ function renderDocumentTypeSettings(settings) {
   renderDocumentTypeFilterOptions();
   renderCategoryFilterOptions();
 
-  if (!documentTypeSettingsEl) {
+  if (!documentTypeSettingsEl || isBeingEdited(documentTypeSettingsEl)) {
     return;
   }
 
@@ -453,6 +453,7 @@ function renderDocumentTypeSettings(settings) {
           })
         });
         showToast(`Dokumenttyp ${key} aktualisiert`);
+        releaseForm(documentTypeSettingsEl);
         await refreshDashboard();
       } catch (error) {
         showToast(error.message, true);
@@ -465,6 +466,11 @@ function renderRagfindSettings(settings = state.ragfindSettings) {
   state.ragfindSettings = settings;
 
   if (!ragfindKnowledgeBaseOptionsEl || !ragfindSettingsSummaryEl) {
+    return;
+  }
+
+  if (isBeingEdited(ragfindSettingsFormEl)) {
+    ragfindSettingsSummaryEl.textContent = "Ungespeicherte Aenderungen - automatische Aktualisierung pausiert.";
     return;
   }
 
@@ -514,6 +520,43 @@ function fillModelSelect(selectEl, models, selectedValue) {
   }
 }
 
+// Das Dashboard aktualisiert sich alle 20 Sekunden selbst (siehe setInterval am
+// Dateiende). Ohne diese Sperre ueberschreibt jede dieser Aktualisierungen die
+// Felder eines Formulars, das gerade ausgefuellt wird - beim Einstellen einer
+// neuen Provider-Verbindung sprangen dadurch alle Werte zurueck, bevor man auf
+// Speichern klicken konnte.
+const editedForms = new WeakSet();
+
+function watchFormEdits(element) {
+  if (!element) {
+    return;
+  }
+
+  for (const type of ["input", "change"]) {
+    element.addEventListener(type, () => editedForms.add(element));
+  }
+}
+
+// Explizit als "in Bearbeitung" markieren, wenn die Absicht eindeutig ist, auch
+// ohne dass ein input/change-Event geflogen ist - etwa nach dem Laden der
+// Modell-Liste fuer eine neue Server-URL.
+function markEdited(element) {
+  if (element) {
+    editedForms.add(element);
+  }
+}
+
+function isBeingEdited(element) {
+  return Boolean(element) && editedForms.has(element);
+}
+
+// Nach dem Speichern (oder bewusstem Verwerfen) darf wieder aktualisiert werden.
+function releaseForm(element) {
+  if (element) {
+    editedForms.delete(element);
+  }
+}
+
 function updateAiProviderApiKeyVisibility() {
   if (!aiProviderSelectEl || !aiProviderApiKeyFieldEl) {
     return;
@@ -542,6 +585,14 @@ function renderAiProviderSettings(settings = state.aiProviderSettings) {
   state.aiProviderSettings = settings;
 
   if (!aiProviderSettingsFormEl) {
+    return;
+  }
+
+  // Ungespeicherte Eingaben haben Vorrang vor dem gespeicherten Stand.
+  if (isBeingEdited(aiProviderSettingsFormEl)) {
+    if (aiProviderSettingsSummaryEl) {
+      aiProviderSettingsSummaryEl.textContent = "Ungespeicherte Aenderungen - automatische Aktualisierung pausiert.";
+    }
     return;
   }
 
@@ -609,6 +660,10 @@ async function loadAiProviderModelOptions() {
     fillModelSelect(aiProviderEmbeddingModelEl, models, aiProviderEmbeddingModelEl.value || state.aiProviderSettings.embeddingModel);
     fillModelSelect(aiProviderSummaryModelEl, models, aiProviderSummaryModelEl.value || state.aiProviderSettings.summaryModel);
     fillModelSelect(aiProviderClassifierModelEl, models, aiProviderClassifierModelEl.value || state.aiProviderSettings.classifierModel);
+
+    // Wer Modelle fuer eine URL laedt, ist mitten in der Konfiguration: ab hier
+    // darf die Hintergrund-Aktualisierung die Auswahl nicht zurueckstellen.
+    markEdited(aiProviderSettingsFormEl);
 
     aiProviderReachabilityEl.textContent = models.length
       ? `Server erreichbar - ${models.length} Modell(e) gefunden.`
@@ -1959,6 +2014,7 @@ if (ragfindSettingsFormEl) {
         body: JSON.stringify({ knowledgeBaseIds: selectedKnowledgeBaseIds })
       });
 
+      releaseForm(ragfindSettingsFormEl);
       renderRagfindSettings(settings);
       showToast("RAGfind-Konfiguration gespeichert");
     } catch (error) {
@@ -2002,6 +2058,7 @@ if (aiProviderSettingsFormEl) {
         body: JSON.stringify(payload)
       });
 
+      releaseForm(aiProviderSettingsFormEl);
       renderAiProviderSettings(settings);
       showToast("KI-Provider-Konfiguration gespeichert");
     } catch (error) {
@@ -2045,5 +2102,11 @@ themeToggleEl.addEventListener("click", () => {
 
 updateThemeToggle();
 updateAnalysisButtons();
+// Diese Bereiche enthalten Eingaben, die eine Hintergrund-Aktualisierung nicht
+// ueberschreiben darf (siehe isBeingEdited).
+watchFormEdits(aiProviderSettingsFormEl);
+watchFormEdits(ragfindSettingsFormEl);
+watchFormEdits(documentTypeSettingsEl);
+
 refreshDashboard().catch((error) => showToast(error.message, true));
 setInterval(() => refreshDashboard().catch(() => undefined), 20000);

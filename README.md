@@ -297,6 +297,14 @@ Worauf zu achten ist:
 - **Task-Prefixes** werden aus dem Modellnamen abgeleitet. vLLM meldet oft den vollen HF-Pfad
   (`nomic-ai/nomic-embed-text-v1.5`), was erkannt wird; bei exotischen Namen helfen
   `EMBEDDING_DOCUMENT_PREFIX` / `EMBEDDING_QUERY_PREFIX`.
+- **Erste Inferenz schlägt fehl, Modell-Liste funktioniert:** Meldet der Server
+  `Failed to find C compiler` oder verweist auf `triton.knobs.build.impl`, fehlt im
+  vLLM-Container ein C-Compiler. vLLM kompiliert Triton-Kernel beim ersten echten
+  Aufruf; `/v1/models` läuft deshalb, `/v1/embeddings` nicht. Abhilfe: `gcc` bzw.
+  `build-essential` im vLLM-Image installieren oder `CC` auf einen vorhandenen
+  Compiler setzen. Ein solcher Fehler wird jetzt als
+  `AI provider at ... answered HTTP 500: ...` gemeldet — der Server war also
+  erreichbar, die Ursache liegt bei ihm.
 - **Strukturierte Antworten:** Lehnt ein Server `response_format: json_object` ab, wird die Anfrage
   automatisch ohne dieses Feld wiederholt. Die Klassifikation funktioniert dadurch auch auf
   Servern ohne Guided Decoding.

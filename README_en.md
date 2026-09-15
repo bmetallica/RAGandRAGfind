@@ -284,6 +284,13 @@ Things to watch:
 - **Task prefixes** are derived from the model name. vLLM often reports the full HF path
   (`nomic-ai/nomic-embed-text-v1.5`), which is recognised; for unusual names use
   `EMBEDDING_DOCUMENT_PREFIX` / `EMBEDDING_QUERY_PREFIX`.
+- **First inference fails while the model list works:** if the server reports
+  `Failed to find C compiler` or points at `triton.knobs.build.impl`, the vLLM
+  container has no C compiler. vLLM compiles Triton kernels on the first real
+  call, so `/v1/models` succeeds while `/v1/embeddings` does not. Install `gcc` /
+  `build-essential` in the vLLM image, or point `CC` at an existing compiler.
+  Such a failure is now reported as `AI provider at ... answered HTTP 500: ...`,
+  making clear the server was reachable and the fault is upstream.
 - **Structured output:** if a server rejects `response_format: json_object`, the request is retried
   without it automatically, so classification also works on servers without guided decoding.
 
