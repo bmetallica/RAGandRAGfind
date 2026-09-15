@@ -19,6 +19,53 @@ interface QueueEntry {
   depth: number;
 }
 
+// Ablagefaehige Kopie der Seite. Der RAGfind-Viewer rendert eine als Original
+// gespeicherte HTML-Datei direkt (siehe buildViewerContent), deshalb landet hier
+// echtes HTML und nicht der extrahierte Text.
+//
+// Entfernt wird alles Ausfuehrbare - Skripte, eingebettete Fremdinhalte,
+// Formulare und on*-Attribute. Ohne das waere jede gecrawlte Seite gespeichertes
+// XSS im RAGfind-Ursprung. Stylesheets bleiben erhalten, sonst sieht die
+// Archivkopie nicht wie die Seite aus; zusammen mit dem eingefuegten <base>
+// laedt der Browser sie beim Betrachten von der Originalseite nach.
+function buildStorableHtml(html: string, finalUrl: string): string {
+  const $ = cheerio.load(html);
+
+  $("script, noscript, iframe, object, embed, form, applet").remove();
+  $("*").each((_, element) => {
+    const attribs = (element as { attribs?: Record<string, string> }).attribs ?? {};
+    for (const name of Object.keys(attribs)) {
+      const value = attribs[name] ?? "";
+      if (name.toLowerCase().startsWith("on") || /^\s*javascript:/i.test(value)) {
+        $(element).removeAttr(name);
+      }
+    }
+  });
+
+  // Relative Pfade zu Stylesheets, Bildern und Links zeigen sonst ins Leere,
+  // weil die Kopie unter einer anderen Herkunft ausgeliefert wird.
+  const head = $("head").first();
+  if (head.length > 0) {
+    head.find("base").remove();
+    head.prepend(`<base href="${finalUrl.replace(/"/g, "&quot;")}">`);
+  }
+
+  return $.html();
+}
+
+function buildPageFileName(finalUrl: string): string {
+  try {
+    const segment = new URL(finalUrl).pathname.split("/").filter(Boolean).pop() ?? "";
+    const cleaned = segment.replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^-+|-+$/g, "");
+    if (!cleaned) {
+      return "index.html";
+    }
+    return /\.html?$/i.test(cleaned) ? cleaned : `${cleaned}.html`;
+  } catch {
+    return "index.html";
+  }
+}
+
 function resolveFinalResponseUrl(response: { request?: { res?: { responseUrl?: string }; responseURL?: string } }, fallbackUrl: string): string {
   const responseUrl = response.request?.res?.responseUrl ?? response.request?.responseURL;
   if (!responseUrl) {
@@ -79,19 +126,15 @@ export class CrawlService {
       const bodyText = $("body").text().replace(/\s+/g, " ").trim();
 
       if (bodyText) {
-        const result = await this.ingestionService.ingestText({
-          sourceType: "crawl",
-          sourceRef: finalUrl,
-          knowledgeBaseId: options.knowledgeBaseId ?? null,
-          sourceUrl: finalUrl,
+        const result = await this.ingestPage({
+          finalUrl,
           title,
-          text: bodyText,
-          mimeType: String(contentType),
-          fileType: "html",
-          metadata: {
-            crawlDepth: current.depth,
-            redirectSourceUrl: finalUrl !== current.url ? current.url : undefined
-          }
+          bodyText,
+          html,
+          contentType: String(contentType),
+          knowledgeBaseId: options.knowledgeBaseId ?? null,
+          depth: current.depth,
+          requestedUrl: current.url
         });
 
         pages += 1;
@@ -138,6 +181,50 @@ export class CrawlService {
     return { pages, files, duplicates };
   }
 
+  // Speichert neben dem extrahierten Text eine bereinigte HTML-Kopie als
+  // Originaldatei. Der RAGfind-Viewer bevorzugt diese Datei gegenueber dem
+  // extrahierten Text und zeigt die Fundstelle dadurch als Seite statt als
+  // Fliesstext (siehe buildViewerContent in src/ragfind/server.ts).
+  private async ingestPage(input: {
+    finalUrl: string;
+    title: string;
+    bodyText: string;
+    html: string;
+    contentType: string;
+    knowledgeBaseId: number | null;
+    depth: number;
+    requestedUrl: string;
+  }) {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "rag-crawl-page-"));
+    try {
+      const fileName = buildPageFileName(input.finalUrl);
+      const filePath = path.join(tempDir, fileName);
+      await writeFile(filePath, buildStorableHtml(input.html, input.finalUrl), "utf8");
+
+      // Wie in ingestRemoteFile: ohne `await` raeumt das `finally` das
+      // Verzeichnis weg, bevor die Datei kopiert wurde.
+      return await this.ingestionService.ingestText({
+        sourceType: "crawl",
+        sourceRef: input.finalUrl,
+        knowledgeBaseId: input.knowledgeBaseId,
+        sourceUrl: input.finalUrl,
+        title: input.title,
+        text: input.bodyText,
+        mimeType: input.contentType,
+        fileType: "html",
+        originalFilePath: filePath,
+        originalFileName: fileName,
+        originalExternalUrl: input.finalUrl,
+        metadata: {
+          crawlDepth: input.depth,
+          redirectSourceUrl: input.finalUrl !== input.requestedUrl ? input.requestedUrl : undefined
+        }
+      });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
   private async ingestRemoteFile(url: string, buffer: Buffer, knowledgeBaseId?: number | null) {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "rag-crawl-"));
     try {
@@ -145,7 +232,11 @@ export class CrawlService {
       const baseName = path.basename(pathname) || "downloaded-file";
       const filePath = path.join(tempDir, baseName);
       await writeFile(filePath, buffer);
-      return this.ingestionService.ingestFile({
+      // `await` ist hier zwingend: ohne es laeuft das `finally` unten los,
+      // sobald ingestFile die Promise zurueckgibt - also waehrend die
+      // Extraktion noch laeuft. Das Temp-Verzeichnis war dann schon geloescht,
+      // und OCR scheiterte mit "cannot read input file ... No such file".
+      return await this.ingestionService.ingestFile({
         filePath,
         sourceType: "crawl-file",
         sourceRef: url,

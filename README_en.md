@@ -169,6 +169,28 @@ Deduplication is per knowledge base (`content_hash` + `knowledge_base_id`), so t
 deliberately live in several knowledge bases. The job result in the queue view reports scanned,
 imported, and duplicate counts per knowledge base.
 
+## Updating
+
+`./update.sh` brings a running installation up to date without losing data:
+
+```bash
+./update.sh                  # back up, git pull, rebuild, start, verify
+./update.sh --no-pull        # rebuild and start only
+./update.sh --skip-backup    # without a backup
+```
+
+The order is deliberate — back up first, then pull. Before anything changes, a PostgreSQL dump, an
+archive of the original files from the `app-data` volume, and the `.env` land in
+`backups/<timestamp>/` together with restore instructions. If a step fails, the script aborts
+before changing anything.
+
+`docker compose down -v` deliberately never appears: it would delete the volumes and with them the
+database and the original files. Elasticsearch is not backed up because the index can be rebuilt
+from PostgreSQL at any time from the admin UI.
+
+Afterwards the script reports which keys from `.env.example` are missing in your `.env`, and
+reminds you about reindexing or re-embedding when a change requires it.
+
 ## Measuring retrieval quality
 
 `npm run eval` measures Recall@k, MRR, nDCG@k, and Precision@1 against a goldenset of real

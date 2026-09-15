@@ -181,6 +181,28 @@ Die Deduplizierung greift pro Wissensdatenbank (`content_hash` + `knowledge_base
 also bewusst in mehreren Wissensdatenbanken liegen. Das Job-Ergebnis in der Queue-Ansicht zeigt pro
 Wissensdatenbank, wie viele Dateien gescannt, importiert und als Duplikat erkannt wurden.
 
+## Aktualisieren
+
+`./update.sh` bringt eine laufende Installation auf den neuesten Stand, ohne Daten zu verlieren:
+
+```bash
+./update.sh                  # sichern, git pull, neu bauen, starten, pruefen
+./update.sh --no-pull        # nur neu bauen und starten
+./update.sh --skip-backup    # ohne Sicherung
+```
+
+Die Reihenfolge ist Absicht — erst sichern, dann ziehen. Vor jeder Aenderung landen ein
+PostgreSQL-Dump, ein Archiv der Originaldateien aus dem `app-data`-Volume und die `.env` unter
+`backups/<zeitstempel>/`, zusammen mit einer Wiederherstellungs-Anleitung. Schlaegt etwas fehl,
+bricht das Skript ab, bevor es etwas veraendert hat.
+
+`docker compose down -v` kommt bewusst nicht vor: das wuerde die Volumes und damit Datenbank und
+Originaldateien loeschen. Elasticsearch wird nicht gesichert, weil sich der Index im Admin-UI
+jederzeit aus PostgreSQL neu aufbauen laesst.
+
+Nach dem Update meldet das Skript, welche Schluessel aus `.env.example` in der eigenen `.env`
+fehlen, und erinnert an Reindex beziehungsweise Re-Embedding, falls eine Aenderung das noetig macht.
+
 ## Retrieval-Qualität messen
 
 `npm run eval` misst Recall@k, MRR, nDCG@k und Precision@1 gegen ein Goldenset echter Fragen.
