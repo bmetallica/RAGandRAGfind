@@ -8,6 +8,8 @@ import { env } from "../config/env";
 import { crawlQueue, gitRepoSyncQueue, ingestQueue, reembedQueue, syncQueue } from "../queues";
 import { SchedulerService } from "../services/schedulerService";
 import { VectorService } from "../services/vectorService";
+import { rerankerService } from "../services/rerankerService";
+import { buildDocumentEmbeddingInput } from "../services/embeddingInputService";
 import { AnalysisService, type AnalysisResponse, type ComparisonResponse, type CrossReferenceResponse, type SummaryResponse } from "../services/analysisService";
 import {
   findDocument,
@@ -100,6 +102,9 @@ interface QueryItem {
   originalFile?: DocumentFileRecord | null;
   elasticsearchScore?: number;
   elasticsearchDocumentScore?: number;
+  // Raw cross-encoder relevance (0..1) when a reranker was used; `score` holds
+  // the value rescaled onto the fusion range.
+  rerankScore?: number;
 }
 
 export interface QueryResponse {
@@ -516,6 +521,79 @@ function rerankItems(items: QueryItem[], query: string, options?: SearchOptions)
     });
 
   return [...rerankedHead, ...items.slice(rerankLimit)];
+}
+
+// Text handed to the cross-encoder. Same context header as the embedding input
+// (document title + section heading), because a bare table row or numbered
+// clause is just as ambiguous to a reranker as it is to an embedding model.
+function buildRerankDocument(item: QueryItem): string {
+  const sectionTitle = typeof item.metadata.sectionTitle === "string" ? item.metadata.sectionTitle : null;
+  // Length is capped inside RerankerService against RERANKER_DOCUMENT_MAX_CHARS,
+  // which also handles a server that rejects the pair anyway.
+  return buildDocumentEmbeddingInput({
+    documentTitle: item.title ?? item.sourceRef,
+    sectionTitle,
+    content: item.content
+  });
+}
+
+// Replaces the lexical heuristic with a cross-encoder when one is configured,
+// and falls back to `rerankItems` whenever it is not available - the reranker
+// sits in the live query path, so its absence must cost ranking quality, never
+// results.
+//
+// The relevance scores (0..1) are mapped onto the score range the head already
+// had rather than used raw: downstream stages (`applyAdjacentSectionBias`) add
+// and subtract absolute bonuses tuned for the fusion scale, and a raw 0..1
+// score would let those bonuses override the cross-encoder entirely. The span
+// has a floor so a head with near-identical fusion scores still gets a usable
+// spread.
+const MIN_RERANK_SCORE_SPAN = 2;
+
+export async function rerankItemsWithCrossEncoder(
+  items: QueryItem[],
+  query: string,
+  options?: SearchOptions
+): Promise<{ items: QueryItem[]; usedCrossEncoder: boolean }> {
+  if (items.length === 0 || !(await rerankerService.isConfigured())) {
+    return { items: rerankItems(items, query, options), usedCrossEncoder: false };
+  }
+
+  const topN = Math.min(await rerankerService.getTopN(), items.length);
+  const head = items.slice(0, topN);
+  const tail = items.slice(topN);
+
+  const results = await rerankerService.rerank(query, head.map(buildRerankDocument), topN);
+  if (!results || results.length === 0) {
+    return { items: rerankItems(items, query, options), usedCrossEncoder: false };
+  }
+
+  const headScores = head.map((item) => item.score);
+  const maxScore = Math.max(...headScores);
+  const minScore = Math.min(...headScores);
+  const span = Math.max(maxScore - minScore, MIN_RERANK_SCORE_SPAN);
+
+  const rerankedHead: QueryItem[] = [];
+  const placed = new Set<number>();
+  for (const result of results) {
+    const item = head[result.index];
+    if (!item) {
+      continue;
+    }
+
+    placed.add(result.index);
+    rerankedHead.push({
+      ...item,
+      score: minScore + (result.score * span),
+      rerankScore: result.score
+    });
+  }
+
+  // A server that honours `top_n` returns fewer rows than it was given; the
+  // candidates it dropped keep their fusion order below the ranked ones.
+  const unplaced = head.filter((_, index) => !placed.has(index));
+
+  return { items: [...rerankedHead, ...unplaced, ...tail], usedCrossEncoder: true };
 }
 
 function mergeElasticsearchSignals(
@@ -1090,11 +1168,28 @@ async function refineItemsWithinDocument(documentId: number, query: string, limi
       ),
       query_search AS (
         SELECT
-          CASE
-            WHEN EXISTS (SELECT 1 FROM query_terms)
-              THEN to_tsquery('simple', (SELECT string_agg(term, ' | ') FROM query_terms))
-            ELSE NULL
-          END AS tsquery
+          tsquery,
+          tsquery_de,
+          (tsquery IS NOT NULL AND numnode(tsquery) > 0) AS has_tsquery,
+          (tsquery_de IS NOT NULL AND numnode(tsquery_de) > 0) AS has_tsquery_de
+        FROM (
+          SELECT
+            CASE
+              WHEN EXISTS (SELECT 1 FROM query_terms)
+                THEN to_tsquery('simple', (SELECT string_agg(term, ' | ') FROM query_terms))
+              ELSE NULL
+            END AS tsquery,
+            -- German stemming and stop words, so "Dienstplaene" matches "Dienstplan".
+            -- Added NEXT TO the 'simple' query rather than replacing it: only 'simple'
+            -- still matches file names, Aktenzeichen and identifiers verbatim, and the
+            -- German stemmer would mangle exactly those. Every site below takes the
+            -- better of the two ranks (see migrations/021_german_text_search.sql).
+            CASE
+              WHEN EXISTS (SELECT 1 FROM query_terms)
+                THEN to_tsquery('german', (SELECT string_agg(term, ' | ') FROM query_terms))
+              ELSE NULL
+            END AS tsquery_de
+        ) built_queries
       ),
       ranked AS (
         SELECT
@@ -1137,12 +1232,21 @@ async function refineItemsWithinDocument(documentId: number, query: string, limi
               WHERE strpos(COALESCE(s.search_content_normalized, ''), term) > 0
                 OR strpos(COALESCE(s.search_title_normalized, ''), term) > 0
             ) AS section_hits,
-            COALESCE(
-              ts_rank_cd(
-                COALESCE(s.search_tsv, setweight(c.search_content_tsv, 'B')),
-                qs.tsquery
-              ),
-              0
+            GREATEST(
+              CASE
+                WHEN qs.has_tsquery THEN COALESCE(ts_rank_cd(
+                  COALESCE(s.search_tsv, setweight(c.search_content_tsv, 'B')),
+                  qs.tsquery
+                ), 0)
+                ELSE 0
+              END,
+              CASE
+                WHEN qs.has_tsquery_de THEN COALESCE(ts_rank_cd(
+                  COALESCE(s.search_tsv_de, setweight(c.search_content_tsv_de, 'B')),
+                  qs.tsquery_de
+                ), 0)
+                ELSE 0
+              END
             ) AS keyword_score,
             CASE
               WHEN qi.normalized_query IS NOT NULL AND qi.normalized_query <> '' AND (
@@ -1214,7 +1318,9 @@ export async function executeSimilarityQuery(
   const candidateK = Math.max(topK * 4, env.QUERY_CANDIDATE_K, 24);
   const candidateStageStartedAt = Date.now();
   const [embedding, elasticChunkCandidates, elasticDocumentCandidates] = await Promise.all([
-    vectorService.embedOne(query, model),
+    // Query side gets the model's query prefix; the document side is prefixed
+    // when the chunk is embedded (see embeddingInputService).
+    vectorService.embedQuery(query, model),
     searchIndexService.searchChunkCandidates(
       query,
       Math.max(candidateK * 3, 50),
@@ -1255,11 +1361,28 @@ export async function executeSimilarityQuery(
       ),
       query_search AS (
         SELECT
-          CASE
-            WHEN EXISTS (SELECT 1 FROM query_terms)
-              THEN to_tsquery('simple', (SELECT string_agg(term, ' | ') FROM query_terms))
-            ELSE NULL
-          END AS tsquery
+          tsquery,
+          tsquery_de,
+          (tsquery IS NOT NULL AND numnode(tsquery) > 0) AS has_tsquery,
+          (tsquery_de IS NOT NULL AND numnode(tsquery_de) > 0) AS has_tsquery_de
+        FROM (
+          SELECT
+            CASE
+              WHEN EXISTS (SELECT 1 FROM query_terms)
+                THEN to_tsquery('simple', (SELECT string_agg(term, ' | ') FROM query_terms))
+              ELSE NULL
+            END AS tsquery,
+            -- German stemming and stop words, so "Dienstplaene" matches "Dienstplan".
+            -- Added NEXT TO the 'simple' query rather than replacing it: only 'simple'
+            -- still matches file names, Aktenzeichen and identifiers verbatim, and the
+            -- German stemmer would mangle exactly those. Every site below takes the
+            -- better of the two ranks (see migrations/021_german_text_search.sql).
+            CASE
+              WHEN EXISTS (SELECT 1 FROM query_terms)
+                THEN to_tsquery('german', (SELECT string_agg(term, ' | ') FROM query_terms))
+              ELSE NULL
+            END AS tsquery_de
+        ) built_queries
       ),
       candidate_documents AS (
         SELECT DISTINCT document_id
@@ -1271,16 +1394,13 @@ export async function executeSimilarityQuery(
           WHERE c.id = ANY(COALESCE($11::bigint[], ARRAY[]::bigint[]))
         ) candidate_rows
       ),
-      document_base AS (
-        SELECT
-          d.id,
-          d.title,
-          d.source_type,
-          d.source_ref,
-          d.source_url,
-          d.metadata,
-          d.search_lookup_normalized AS normalized_ref,
-          d.search_text_normalized_preview AS normalized_text
+      -- Single ACL boundary for the whole query: every candidate source below
+      -- joins this, so a document outside the permitted knowledge bases cannot
+      -- reach the result. It used to be enforced indirectly through the
+      -- document_signals join, which stopped being possible once signals moved
+      -- behind candidate selection.
+      scoped_documents AS (
+        SELECT d.id AS document_id
         FROM documents d
         WHERE (
           $9::bigint[] IS NULL
@@ -1290,6 +1410,190 @@ export async function executeSimilarityQuery(
             NOT EXISTS (SELECT 1 FROM candidate_documents)
             OR d.id IN (SELECT document_id FROM candidate_documents)
           )
+      ),
+      -- Two things keep this on the HNSW index instead of a full scan over every
+      -- chunk:
+      --   * the query vector is written as $1::vector, NOT taken from the
+      --     query_input CTE. pgvector only recognises an ORDER BY as an index
+      --     scan when the operand is a constant or a parameter; a column from a
+      --     joined relation turns it into a sequential scan with one distance
+      --     computation per chunk.
+      --   * the ACL restriction is a WHERE qual, so the index scan can apply it
+      --     while walking the graph rather than after materialising everything.
+      -- The tie-breaker on c.id stays out of the ORDER BY for the same reason
+      -- and is applied in the outer ranking instead.
+      vector_candidates AS (
+        SELECT
+          chunk_id,
+          document_id,
+          vector_score,
+          ROW_NUMBER() OVER (ORDER BY vector_score DESC, chunk_id) AS vector_rank
+        FROM (
+          SELECT
+            c.id AS chunk_id,
+            c.document_id,
+            1 - (c.embedding <=> $1::vector) AS vector_score
+          FROM document_chunks c
+          WHERE c.embedding IS NOT NULL
+            AND c.document_id IN (SELECT document_id FROM scoped_documents)
+          ORDER BY c.embedding <=> $1::vector
+          LIMIT $3::integer
+        ) nearest_chunks
+      ),
+      document_keyword_matches AS (
+        SELECT
+          d.id AS document_id,
+          GREATEST(
+            CASE WHEN q.has_tsquery THEN ts_rank_cd(d.search_lookup_tsv, q.tsquery) ELSE 0 END,
+            CASE WHEN q.has_tsquery_de THEN ts_rank_cd(d.search_lookup_tsv_de, q.tsquery_de) ELSE 0 END
+          ) AS document_keyword_score,
+          ROW_NUMBER() OVER (
+            ORDER BY GREATEST(
+            CASE WHEN q.has_tsquery THEN ts_rank_cd(d.search_lookup_tsv, q.tsquery) ELSE 0 END,
+            CASE WHEN q.has_tsquery_de THEN ts_rank_cd(d.search_lookup_tsv_de, q.tsquery_de) ELSE 0 END
+          ) DESC, d.id DESC
+          ) AS document_keyword_rank
+        FROM documents d
+        INNER JOIN scoped_documents sd ON sd.document_id = d.id
+        CROSS JOIN query_search q
+        WHERE (
+            (q.has_tsquery AND d.search_lookup_tsv @@ q.tsquery)
+            OR (q.has_tsquery_de AND d.search_lookup_tsv_de @@ q.tsquery_de)
+          )
+      ),
+      top_document_keyword_matches AS (
+        SELECT document_id
+        FROM document_keyword_matches
+        WHERE document_keyword_rank <= ($3::integer * 2)
+      ),
+      document_keyword_seed_chunks AS (
+        SELECT chunk_id
+        FROM (
+          SELECT
+            c.id AS chunk_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY c.document_id
+              ORDER BY c.chunk_index ASC, c.id ASC
+            ) AS document_chunk_rank
+          FROM document_chunks c
+          INNER JOIN top_document_keyword_matches dkm ON dkm.document_id = c.document_id
+        ) ranked_document_chunks
+        WHERE document_chunk_rank <= GREATEST($7::integer, 1)
+      ),
+      chunk_keyword_matches AS (
+        SELECT
+          c.id AS chunk_id,
+          GREATEST(
+            CASE WHEN q.has_tsquery THEN ts_rank_cd(c.search_content_tsv, q.tsquery) ELSE 0 END,
+            CASE WHEN q.has_tsquery_de THEN ts_rank_cd(c.search_content_tsv_de, q.tsquery_de) ELSE 0 END
+          ) AS chunk_keyword_score,
+          ROW_NUMBER() OVER (
+            ORDER BY GREATEST(
+            CASE WHEN q.has_tsquery THEN ts_rank_cd(c.search_content_tsv, q.tsquery) ELSE 0 END,
+            CASE WHEN q.has_tsquery_de THEN ts_rank_cd(c.search_content_tsv_de, q.tsquery_de) ELSE 0 END
+          ) DESC, c.id DESC
+          ) AS chunk_keyword_rank
+        FROM document_chunks c
+        INNER JOIN scoped_documents sd ON sd.document_id = c.document_id
+        CROSS JOIN query_search q
+        WHERE (
+            (q.has_tsquery AND c.search_content_tsv @@ q.tsquery)
+            OR (q.has_tsquery_de AND c.search_content_tsv_de @@ q.tsquery_de)
+          )
+      ),
+      top_chunk_keyword_matches AS (
+        SELECT chunk_id
+        FROM chunk_keyword_matches
+        WHERE chunk_keyword_rank <= ($3::integer * 4)
+      ),
+      keyword_seed_chunks AS (
+        SELECT DISTINCT chunk_id
+        FROM (
+          SELECT chunk_id FROM top_chunk_keyword_matches
+          UNION ALL
+          SELECT chunk_id FROM document_keyword_seed_chunks
+        ) keyword_seed_rows
+      ),
+      keyword_candidates AS (
+        SELECT
+          c.id AS chunk_id,
+          c.document_id,
+          GREATEST(
+            CASE
+              WHEN q.has_tsquery THEN ts_rank_cd(d.search_lookup_tsv || setweight(c.search_content_tsv, 'C'), q.tsquery)
+              ELSE 0
+            END,
+            CASE
+              WHEN q.has_tsquery_de THEN ts_rank_cd(d.search_lookup_tsv_de || setweight(c.search_content_tsv_de, 'C'), q.tsquery_de)
+              ELSE 0
+            END
+          ) AS keyword_score,
+          CASE
+            WHEN qi.normalized_query IS NOT NULL AND (
+              strpos(d.search_lookup_normalized, qi.normalized_query) > 0
+              OR strpos(c.search_content_normalized, qi.normalized_query) > 0
+            ) THEN 1
+            ELSE 0
+          END AS exact_match_boost,
+          ROW_NUMBER() OVER (
+            ORDER BY
+              GREATEST(
+            CASE
+              WHEN q.has_tsquery THEN ts_rank_cd(d.search_lookup_tsv || setweight(c.search_content_tsv, 'C'), q.tsquery)
+              ELSE 0
+            END,
+            CASE
+              WHEN q.has_tsquery_de THEN ts_rank_cd(d.search_lookup_tsv_de || setweight(c.search_content_tsv_de, 'C'), q.tsquery_de)
+              ELSE 0
+            END
+          ) DESC,
+              CASE
+            WHEN qi.normalized_query IS NOT NULL AND (
+              strpos(d.search_lookup_normalized, qi.normalized_query) > 0
+              OR strpos(c.search_content_normalized, qi.normalized_query) > 0
+            ) THEN 1
+            ELSE 0
+          END DESC,
+              c.id
+          ) AS keyword_rank
+        FROM keyword_seed_chunks k
+        INNER JOIN document_chunks c ON c.id = k.chunk_id
+        INNER JOIN documents d ON d.id = c.document_id
+        INNER JOIN scoped_documents sd ON sd.document_id = d.id
+        CROSS JOIN query_search q
+        CROSS JOIN query_input qi
+        WHERE (q.has_tsquery OR q.has_tsquery_de)
+        ORDER BY keyword_score DESC, exact_match_boost DESC, c.id
+        LIMIT $3::integer
+      ),
+      -- Only documents that actually surfaced in a candidate list are worth the
+      -- trigram work below. Previously document_signals ran similarity() and
+      -- word_similarity() over every document's first 16k characters, once per
+      -- query term - a full corpus scan on every single search whenever
+      -- Elasticsearch was not there to narrow the field first.
+      signal_scope AS (
+        SELECT DISTINCT document_id
+        FROM (
+          SELECT document_id FROM vector_candidates
+          UNION ALL
+          SELECT document_id FROM keyword_candidates
+        ) candidate_document_rows
+      ),
+      document_base AS (
+        SELECT
+          d.id,
+          d.source_type,
+          d.search_lookup_normalized AS normalized_ref,
+          d.search_text_normalized_preview AS normalized_text,
+          -- Separate, shorter window for the trigram pass - see
+          -- QUERY_FUZZY_TEXT_WINDOW. Exact matching below still uses the full
+          -- normalized_text.
+          CASE
+            WHEN $12::integer > 0 THEN left(d.search_text_normalized_preview, $12::integer)
+            ELSE d.search_text_normalized_preview
+          END AS fuzzy_text
+        FROM documents d
+        INNER JOIN signal_scope ss ON ss.document_id = d.id
       ),
       document_signals AS (
         SELECT
@@ -1342,168 +1646,39 @@ export async function executeSimilarityQuery(
         CROSS JOIN query_input q
         LEFT JOIN LATERAL (
           SELECT
-            COUNT(*) FILTER (WHERE strpos(d.normalized_ref, term) > 0) AS ref_hits,
-            COUNT(*) FILTER (WHERE char_length(term) >= 4 AND strpos(d.normalized_text, term) > 0) AS text_hits,
-            COUNT(*) FILTER (
-              WHERE char_length(term) >= 5 AND GREATEST(
-                similarity(term, d.normalized_ref),
-                word_similarity(term, d.normalized_ref),
-                similarity(term, d.normalized_text),
-                word_similarity(term, d.normalized_text)
-              ) >= 0.60
-            ) AS fuzzy_hits,
-            COALESCE(SUM(
+            COUNT(*) FILTER (WHERE ref_hit) AS ref_hits,
+            COUNT(*) FILTER (WHERE text_hit) AS text_hits,
+            COUNT(*) FILTER (WHERE fuzzy >= 0.60) AS fuzzy_hits,
+            COALESCE(SUM(fuzzy), 0) AS fuzzy_score
+          FROM (
+            SELECT
+              strpos(d.normalized_ref, term) > 0 AS ref_hit,
+              char_length(term) >= 4 AND strpos(d.normalized_text, term) > 0 AS text_hit,
               CASE
                 WHEN char_length(term) >= 5 THEN GREATEST(
                   similarity(term, d.normalized_ref),
                   word_similarity(term, d.normalized_ref),
-                  similarity(term, d.normalized_text),
-                  word_similarity(term, d.normalized_text)
+                  -- similarity(term, d.normalized_text) used to be part of this
+                  -- GREATEST and was pure cost: it compares a query term against
+                  -- the document's first 16k characters as a whole, so its
+                  -- trigram overlap is vanishing - measured over this corpus it
+                  -- peaks at 0.030 while word_similarity on the same text
+                  -- reaches 1.0, and the fuzzy_hits threshold is 0.60. It could
+                  -- therefore never win the GREATEST, but cost 84 ms per query
+                  -- term across the corpus (word_similarity: 144 ms, both
+                  -- lookup-field calls together: 4 ms).
+                  word_similarity(term, d.fuzzy_text)
                 )
                 ELSE 0
-              END
-            ), 0) AS fuzzy_score
-          FROM query_terms
+              END AS fuzzy
+            FROM query_terms
+          ) term_signals
         ) AS term_hits ON TRUE
-      ),
-      vector_candidates AS (
-        SELECT
-          c.id AS chunk_id,
-          d.id AS document_id,
-          d.title,
-          d.source_type,
-          d.source_ref,
-          d.source_url,
-          c.content,
-          d.metadata,
-          ds.document_match_score,
-          1 - (c.embedding <=> q.embedding) AS vector_score,
-          ROW_NUMBER() OVER (ORDER BY c.embedding <=> q.embedding, c.id) AS vector_rank
-        FROM document_chunks c
-        INNER JOIN documents d ON d.id = c.document_id
-        INNER JOIN document_signals ds ON ds.document_id = d.id
-        CROSS JOIN query_input q
-        WHERE c.embedding IS NOT NULL
-        ORDER BY c.embedding <=> q.embedding, c.id
-        LIMIT $3::integer
-      ),
-      document_keyword_matches AS (
-        SELECT
-          d.id AS document_id,
-          ts_rank_cd(d.search_lookup_tsv, q.tsquery) AS document_keyword_score,
-          ROW_NUMBER() OVER (
-            ORDER BY ts_rank_cd(d.search_lookup_tsv, q.tsquery) DESC, d.id DESC
-          ) AS document_keyword_rank
-        FROM documents d
-        CROSS JOIN query_search q
-        WHERE q.tsquery IS NOT NULL
-          AND numnode(q.tsquery) > 0
-          AND d.search_lookup_tsv @@ q.tsquery
-      ),
-      top_document_keyword_matches AS (
-        SELECT document_id
-        FROM document_keyword_matches
-        WHERE document_keyword_rank <= ($3::integer * 2)
-      ),
-      document_keyword_seed_chunks AS (
-        SELECT chunk_id
-        FROM (
-          SELECT
-            c.id AS chunk_id,
-            ROW_NUMBER() OVER (
-              PARTITION BY c.document_id
-              ORDER BY c.chunk_index ASC, c.id ASC
-            ) AS document_chunk_rank
-          FROM document_chunks c
-          INNER JOIN top_document_keyword_matches dkm ON dkm.document_id = c.document_id
-        ) ranked_document_chunks
-        WHERE document_chunk_rank <= GREATEST($7::integer, 1)
-      ),
-      chunk_keyword_matches AS (
-        SELECT
-          c.id AS chunk_id,
-          ts_rank_cd(c.search_content_tsv, q.tsquery) AS chunk_keyword_score,
-          ROW_NUMBER() OVER (
-            ORDER BY ts_rank_cd(c.search_content_tsv, q.tsquery) DESC, c.id DESC
-          ) AS chunk_keyword_rank
-        FROM document_chunks c
-        CROSS JOIN query_search q
-        WHERE q.tsquery IS NOT NULL
-          AND numnode(q.tsquery) > 0
-          AND c.search_content_tsv @@ q.tsquery
-      ),
-      top_chunk_keyword_matches AS (
-        SELECT chunk_id
-        FROM chunk_keyword_matches
-        WHERE chunk_keyword_rank <= ($3::integer * 4)
-      ),
-      keyword_seed_chunks AS (
-        SELECT DISTINCT chunk_id
-        FROM (
-          SELECT chunk_id FROM top_chunk_keyword_matches
-          UNION ALL
-          SELECT chunk_id FROM document_keyword_seed_chunks
-        ) keyword_seed_rows
-      ),
-      keyword_candidates AS (
-        SELECT
-          c.id AS chunk_id,
-          d.id AS document_id,
-          d.title,
-          d.source_type,
-          d.source_ref,
-          d.source_url,
-          c.content,
-          d.metadata,
-          ds.document_match_score,
-          ts_rank_cd(
-            d.search_lookup_tsv || setweight(c.search_content_tsv, 'C'),
-            q.tsquery
-          ) AS keyword_score,
-          CASE
-            WHEN qi.normalized_query IS NOT NULL AND (
-              strpos(d.search_lookup_normalized, qi.normalized_query) > 0
-              OR strpos(c.search_content_normalized, qi.normalized_query) > 0
-            ) THEN 1
-            ELSE 0
-          END AS exact_match_boost,
-          ROW_NUMBER() OVER (
-            ORDER BY
-              ts_rank_cd(
-                d.search_lookup_tsv || setweight(c.search_content_tsv, 'C'),
-                q.tsquery
-              ) DESC,
-              CASE
-                WHEN qi.normalized_query IS NOT NULL AND (
-                  strpos(d.search_lookup_normalized, qi.normalized_query) > 0
-                  OR strpos(c.search_content_normalized, qi.normalized_query) > 0
-                ) THEN 1
-                ELSE 0
-              END DESC,
-              c.id
-          ) AS keyword_rank
-        FROM keyword_seed_chunks k
-        INNER JOIN document_chunks c ON c.id = k.chunk_id
-        INNER JOIN documents d ON d.id = c.document_id
-        INNER JOIN document_signals ds ON ds.document_id = d.id
-        CROSS JOIN query_search q
-        CROSS JOIN query_input qi
-        WHERE q.tsquery IS NOT NULL
-          AND numnode(q.tsquery) > 0
-        ORDER BY keyword_score DESC, exact_match_boost DESC, c.id
-        LIMIT $3::integer
       ),
       combined_candidates AS (
         SELECT
           chunk_id,
           document_id,
-          title,
-          source_type,
-          source_ref,
-          source_url,
-          content,
-          metadata,
-          document_match_score,
           vector_score,
           NULL::double precision AS keyword_score,
           0 AS exact_match_boost,
@@ -1514,13 +1689,6 @@ export async function executeSimilarityQuery(
         SELECT
           chunk_id,
           document_id,
-          title,
-          source_type,
-          source_ref,
-          source_url,
-          content,
-          metadata,
-          document_match_score,
           NULL::double precision AS vector_score,
           keyword_score,
           exact_match_boost,
@@ -1532,51 +1700,33 @@ export async function executeSimilarityQuery(
         SELECT
           chunk_id,
           document_id,
-          title,
-          source_type,
-          source_ref,
-          source_url,
-          content,
-          metadata,
-          MAX(document_match_score) AS document_match_score,
           MAX(COALESCE(vector_score, 0)) AS vector_score,
           MAX(COALESCE(keyword_score, 0)) AS keyword_score,
           MAX(exact_match_boost) AS exact_match_boost,
           MIN(vector_rank) FILTER (WHERE vector_rank IS NOT NULL) AS vector_rank,
           MIN(keyword_rank) FILTER (WHERE keyword_rank IS NOT NULL) AS keyword_rank
         FROM combined_candidates
-        GROUP BY chunk_id, document_id, title, source_type, source_ref, source_url, content, metadata
+        GROUP BY chunk_id, document_id
       ),
       scored AS (
         SELECT
-          chunk_id,
-          document_id,
-          title,
-          source_type,
-          source_ref,
-          source_url,
-          content,
-          metadata,
-          document_match_score,
-          vector_score,
-          keyword_score,
-          exact_match_boost,
-          COALESCE($4::double precision / (20 + vector_rank), 0)
-            + COALESCE($5::double precision / (20 + keyword_rank), 0)
-            + (exact_match_boost * $6::double precision)
-            + (document_match_score * 0.30) AS score
-        FROM collapsed
+          col.chunk_id,
+          col.document_id,
+          ds.document_match_score,
+          col.vector_score,
+          col.keyword_score,
+          col.exact_match_boost,
+          COALESCE($4::double precision / (20 + col.vector_rank), 0)
+            + COALESCE($5::double precision / (20 + col.keyword_rank), 0)
+            + (col.exact_match_boost * $6::double precision)
+            + (ds.document_match_score * 0.30) AS score
+        FROM collapsed col
+        INNER JOIN document_signals ds ON ds.document_id = col.document_id
       ),
       ranked AS (
         SELECT
           chunk_id,
           document_id,
-          title,
-          source_type,
-          source_ref,
-          source_url,
-          content,
-          metadata,
           score,
           vector_score,
           keyword_score,
@@ -1588,23 +1738,27 @@ export async function executeSimilarityQuery(
           ) AS document_rank
         FROM scored
       )
+      -- Display columns are joined once, at the end, on the handful of rows that
+      -- survive - instead of being carried through every intermediate CTE.
       SELECT
-        chunk_id,
-        document_id,
-        title,
-        source_type,
-        source_ref,
-        source_url,
-        content,
-        score,
-        vector_score,
-        keyword_score,
-        document_match_score,
-        exact_match_boost > 0 AS exact_match,
-        metadata
-      FROM ranked
-      WHERE document_rank <= $7::integer
-      ORDER BY score DESC, document_match_score DESC, keyword_score DESC, vector_score DESC, chunk_id
+        r.chunk_id,
+        r.document_id,
+        d.title,
+        d.source_type,
+        d.source_ref,
+        d.source_url,
+        c.content,
+        r.score,
+        r.vector_score,
+        r.keyword_score,
+        r.document_match_score,
+        r.exact_match_boost > 0 AS exact_match,
+        d.metadata
+      FROM ranked r
+      INNER JOIN document_chunks c ON c.id = r.chunk_id
+      INNER JOIN documents d ON d.id = r.document_id
+      WHERE r.document_rank <= $7::integer
+      ORDER BY r.score DESC, r.document_match_score DESC, r.keyword_score DESC, r.vector_score DESC, r.chunk_id
       LIMIT $8::integer
     `,
     [
@@ -1618,7 +1772,8 @@ export async function executeSimilarityQuery(
       topK,
       searchOptions?.allowedKnowledgeBaseIds ?? null,
       elasticDocumentCandidateIds,
-      elasticChunkCandidateIds
+      elasticChunkCandidateIds,
+      env.QUERY_FUZZY_TEXT_WINDOW
     ]
   );
   timings.sqlRetrievalMs = Date.now() - sqlStageStartedAt;
@@ -1711,9 +1866,12 @@ export async function executeSimilarityQuery(
   const rerankQuery = dominantDocumentId !== null && effectiveSearchOptions.preferDocumentFocus
     ? dominantFocusQuery
     : query;
-  const rerankedItems = searchOptions?.enableRerank === false
-    ? combinedSmartItems
-    : rerankItems(combinedSmartItems, rerankQuery, effectiveSearchOptions);
+  const rerankStageStartedAt = Date.now();
+  const rerankOutcome = searchOptions?.enableRerank === false
+    ? { items: combinedSmartItems, usedCrossEncoder: false }
+    : await rerankItemsWithCrossEncoder(combinedSmartItems, rerankQuery, effectiveSearchOptions);
+  const rerankedItems = rerankOutcome.items;
+  timings.rerankMs = Date.now() - rerankStageStartedAt;
   const adjacencyBiasedItems = dominantDocumentId !== null && effectiveSearchOptions.preferAdjacentSections
     ? applyAdjacentSectionBias(rerankedItems, dominantDocumentId, effectiveSearchOptions.adjacentSectionWindow ?? 1)
     : rerankedItems;
@@ -1751,6 +1909,7 @@ export async function executeSimilarityQuery(
     elasticDocumentCandidateCount: elasticDocumentCandidates?.length ?? 0,
     sqlRowCount: result.rows.length,
     finalItemCount: finalItems.length,
+    crossEncoderRerank: rerankOutcome.usedCrossEncoder,
     timings: {
       ...timings,
       totalMs: Date.now() - startedAt
@@ -2021,11 +2180,28 @@ export async function executeDocumentContextQuery(options: {
       ),
       query_search AS (
         SELECT
-          CASE
-            WHEN EXISTS (SELECT 1 FROM query_terms)
-              THEN to_tsquery('simple', (SELECT string_agg(term, ' | ') FROM query_terms))
-            ELSE NULL
-          END AS tsquery
+          tsquery,
+          tsquery_de,
+          (tsquery IS NOT NULL AND numnode(tsquery) > 0) AS has_tsquery,
+          (tsquery_de IS NOT NULL AND numnode(tsquery_de) > 0) AS has_tsquery_de
+        FROM (
+          SELECT
+            CASE
+              WHEN EXISTS (SELECT 1 FROM query_terms)
+                THEN to_tsquery('simple', (SELECT string_agg(term, ' | ') FROM query_terms))
+              ELSE NULL
+            END AS tsquery,
+            -- German stemming and stop words, so "Dienstplaene" matches "Dienstplan".
+            -- Added NEXT TO the 'simple' query rather than replacing it: only 'simple'
+            -- still matches file names, Aktenzeichen and identifiers verbatim, and the
+            -- German stemmer would mangle exactly those. Every site below takes the
+            -- better of the two ranks (see migrations/021_german_text_search.sql).
+            CASE
+              WHEN EXISTS (SELECT 1 FROM query_terms)
+                THEN to_tsquery('german', (SELECT string_agg(term, ' | ') FROM query_terms))
+              ELSE NULL
+            END AS tsquery_de
+        ) built_queries
       )
       SELECT
         d.id AS document_id,
@@ -2038,15 +2214,15 @@ export async function executeDocumentContextQuery(options: {
         c.content,
         c.metadata,
         d.metadata AS document_metadata,
-        CASE
-          WHEN qs.tsquery IS NULL THEN 0
-          ELSE ts_rank_cd(c.search_content_tsv, qs.tsquery)
-        END AS keyword_score
+        GREATEST(
+          CASE WHEN qs.has_tsquery THEN ts_rank_cd(c.search_content_tsv, qs.tsquery) ELSE 0 END,
+          CASE WHEN qs.has_tsquery_de THEN ts_rank_cd(c.search_content_tsv_de, qs.tsquery_de) ELSE 0 END
+        ) AS keyword_score
       FROM selected_document d
       INNER JOIN document_chunks c ON c.document_id = d.id
       CROSS JOIN query_search qs
       ORDER BY
-        CASE WHEN qs.tsquery IS NULL THEN 0 ELSE 1 END DESC,
+        CASE WHEN qs.has_tsquery OR qs.has_tsquery_de THEN 1 ELSE 0 END DESC,
         keyword_score DESC,
         c.chunk_index ASC,
         c.id ASC
@@ -2931,8 +3107,13 @@ export function createApiRouter(schedulerService: SchedulerService) {
         ? Math.min(Math.floor(requestedBatchSize), 500)
         : 50;
 
-      const job = await reembedQueue.add("reembed", { targetModel, targetDimension, batchSize });
-      response.status(202).json({ jobId: job.id, targetModel, targetDimension, batchSize });
+      // Without `force` this only picks up chunks whose model differs. After an
+      // embedding-input change (context header, task prefix) the model name is
+      // unchanged, so the run would find nothing - that is what force is for.
+      const force = request.body.force === true || request.body.force === "true";
+
+      const job = await reembedQueue.add("reembed", { targetModel, targetDimension, batchSize, force });
+      response.status(202).json({ jobId: job.id, targetModel, targetDimension, batchSize, force });
     } catch (error) {
       next(error);
     }
@@ -2980,7 +3161,9 @@ export function createApiRouter(schedulerService: SchedulerService) {
         return;
       }
 
-      response.json(await getAiProviderSettings());
+      const settings = await getAiProviderSettings();
+      const rerankerHealth = settings.rerankerEnabled ? await rerankerService.checkHealth() : null;
+      response.json({ ...settings, rerankerHealth });
     } catch (error) {
       next(error);
     }
@@ -3064,6 +3247,21 @@ export function createApiRouter(schedulerService: SchedulerService) {
         embeddingDimension = probedDimension;
       }
 
+      // Reranker fields are optional in the payload: an older client that does
+      // not know about them keeps whatever is stored instead of clearing it.
+      const rerankerEnabled = body.rerankerEnabled === undefined
+        ? current.rerankerEnabled
+        : body.rerankerEnabled === true || body.rerankerEnabled === "true";
+      const rerankerBaseUrl = body.rerankerBaseUrl === undefined
+        ? current.rerankerBaseUrl
+        : String(body.rerankerBaseUrl ?? "").trim() || null;
+      const rerankerModel = body.rerankerModel === undefined
+        ? current.rerankerModel
+        : String(body.rerankerModel ?? "").trim() || null;
+      const rerankerTopN = body.rerankerTopN === undefined
+        ? current.rerankerTopN
+        : Number(body.rerankerTopN);
+
       const input: UpdateAiProviderSettingsInput = {
         provider: provider as AiProvider,
         baseUrl,
@@ -3071,13 +3269,19 @@ export function createApiRouter(schedulerService: SchedulerService) {
         embeddingModel,
         summaryModel,
         classifierModel,
-        embeddingDimension
+        embeddingDimension,
+        rerankerEnabled,
+        rerankerBaseUrl,
+        rerankerModel,
+        rerankerTopN,
+        clearApiKey: body.clearApiKey === true || body.clearApiKey === "true"
       };
 
       const updated = await updateAiProviderSettings(input);
-      response.json(updated);
+      const rerankerHealth = updated.rerankerEnabled ? await rerankerService.checkHealth() : null;
+      response.json({ ...updated, rerankerHealth });
     } catch (error) {
-      if (error instanceof Error && /must not be empty|must be a positive number|API key is required/.test(error.message)) {
+      if (error instanceof Error && /must not be empty|must be a positive number|reranker base URL and model are required/.test(error.message)) {
         response.status(400).json({ error: error.message });
         return;
       }
@@ -3228,7 +3432,12 @@ export function createApiRouter(schedulerService: SchedulerService) {
         : env.IMPORT_DIR;
       const knowledgeBaseId = parseKnowledgeBaseId(request.body.knowledgeBaseId);
       const job = await syncQueue.add("sync", { rootDir, knowledgeBaseId });
-      response.status(202).json({ jobId: job.id, rootDir, knowledgeBaseId });
+      // Without an explicit knowledge base the worker maps every immediate
+      // subdirectory of `rootDir` to one knowledge base (see DirectorySyncService).
+      const mode = knowledgeBaseId || !env.SYNC_KNOWLEDGE_BASE_SUBDIRS
+        ? "single-knowledge-base"
+        : "per-knowledge-base";
+      response.status(202).json({ jobId: job.id, rootDir, knowledgeBaseId, mode });
     } catch (error) {
       next(error);
     }
@@ -3274,6 +3483,7 @@ export function createApiRouter(schedulerService: SchedulerService) {
             queue: job.queueName,
             state: job.finishedOn ? "completed" : job.failedReason ? "failed" : job.processedOn ? "active" : "waiting",
             data: job.data,
+            result: job.returnvalue ?? null,
             failedReason: job.failedReason,
             stacktrace: Array.isArray(job.stacktrace) ? job.stacktrace : [],
             timestamp: job.timestamp,

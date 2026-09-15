@@ -1,4 +1,4 @@
-import { Client } from "@elastic/elasticsearch";
+import { Client, type estypes } from "@elastic/elasticsearch";
 import { pool } from "../db/pool";
 import { env } from "../config/env";
 import { logger } from "../utils/logger";
@@ -40,6 +40,39 @@ export interface SearchDocumentCandidate {
   rank: number;
 }
 
+// German analysis chain for a mostly-German corpus. The default `standard`
+// analyzer indexes raw tokens, so "Dienstplaene" and "Dienstplan" are unrelated
+// terms - the same problem the 'simple' tsvector had on the PostgreSQL side.
+//
+// No compound splitter here: `hyphenation_decompounder` needs a hyphenation
+// pattern file and a German word list mounted into the Elasticsearch container.
+// `german_normalization` plus the light stemmer covers the common cases without
+// that operational dependency.
+const INDEX_SETTINGS: estypes.IndicesIndexSettings = {
+  analysis: {
+    filter: {
+      rag_german_stop: { type: "stop", stopwords: "_german_" },
+      rag_german_stemmer: { type: "stemmer", language: "light_german" }
+    },
+    analyzer: {
+      german_rag: {
+        type: "custom",
+        tokenizer: "standard",
+        filter: ["lowercase", "german_normalization", "rag_german_stop", "rag_german_stemmer"]
+      }
+    }
+  }
+};
+
+// Text field indexed twice: the default analyzer keeps verbatim matches on file
+// names and identifiers, the `.de` sub-field adds stemming. Queries search both.
+const GERMAN_TEXT_FIELD: estypes.MappingProperty = {
+  type: "text",
+  fields: {
+    de: { type: "text", analyzer: "german_rag" }
+  }
+};
+
 function toIsoDateString(value: string): string | null {
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
@@ -47,8 +80,13 @@ function toIsoDateString(value: string): string | null {
 
 export class SearchIndexService {
   private readonly client = env.ELASTICSEARCH_URL ? new Client({ node: env.ELASTICSEARCH_URL }) : null;
-  private readonly documentsIndex = `${env.ELASTICSEARCH_INDEX_PREFIX}-documents`;
-  private readonly chunksIndex = `${env.ELASTICSEARCH_INDEX_PREFIX}-chunks`;
+  // Versioned on purpose: `indices.create` cannot change the mapping or the
+  // analysis settings of an index that already exists (the call below swallows
+  // the 400 it returns), so a mapping change has to move to a new index name.
+  // Bump this whenever INDEX_SETTINGS or the mappings change, then run the
+  // Elasticsearch reindex from the admin UI. Old indices can be deleted by hand.
+  private readonly documentsIndex = `${env.ELASTICSEARCH_INDEX_PREFIX}-documents-v2`;
+  private readonly chunksIndex = `${env.ELASTICSEARCH_INDEX_PREFIX}-chunks-v2`;
   private indicesEnsured = false;
 
   isEnabled(): boolean {
@@ -119,17 +157,18 @@ export class SearchIndexService {
 
     await this.client.indices.create({
       index: this.documentsIndex,
+      settings: INDEX_SETTINGS,
       mappings: {
         properties: {
           document_id: { type: "long" },
           knowledge_base_id: { type: "long" },
-          title: { type: "text" },
+          title: GERMAN_TEXT_FIELD,
           source_type: { type: "keyword" },
-          source_ref: { type: "text" },
+          source_ref: GERMAN_TEXT_FIELD,
           source_url: { type: "keyword", ignore_above: 2048 },
           file_type: { type: "keyword" },
           mime_type: { type: "keyword" },
-          extracted_text: { type: "text" },
+          extracted_text: GERMAN_TEXT_FIELD,
           metadata_json: { type: "text", index: false },
           created_at: { type: "date" },
           updated_at: { type: "date" }
@@ -139,17 +178,18 @@ export class SearchIndexService {
 
     await this.client.indices.create({
       index: this.chunksIndex,
+      settings: INDEX_SETTINGS,
       mappings: {
         properties: {
           chunk_id: { type: "long" },
           document_id: { type: "long" },
           knowledge_base_id: { type: "long" },
           chunk_index: { type: "integer" },
-          title: { type: "text" },
+          title: GERMAN_TEXT_FIELD,
           source_type: { type: "keyword" },
-          source_ref: { type: "text" },
+          source_ref: GERMAN_TEXT_FIELD,
           source_url: { type: "keyword", ignore_above: 2048 },
-          content: { type: "text" },
+          content: GERMAN_TEXT_FIELD,
           start_offset: { type: "integer" },
           end_offset: { type: "integer" },
           metadata_json: { type: "text", index: false }
@@ -317,7 +357,7 @@ export class SearchIndexService {
               {
                 multi_match: {
                   query: normalizedQuery,
-                  fields: ["content^6"],
+                  fields: ["content^6", "content.de^5"],
                   type: "best_fields",
                   fuzziness: "AUTO",
                   prefix_length: 1,
@@ -325,6 +365,9 @@ export class SearchIndexService {
                 }
               },
               {
+                // Phrase match stays on the verbatim field only - stemming
+                // shifts token positions, which makes a slop-based phrase
+                // match on the `.de` field unreliable rather than more lenient.
                 multi_match: {
                   query: normalizedQuery,
                   fields: ["content^8"],
@@ -343,9 +386,21 @@ export class SearchIndexService {
                 }
               },
               {
+                // Same as above on the stemmed fields, at a slightly lower
+                // boost: it should rescue German inflections, not outrank an
+                // exact hit.
                 multi_match: {
                   query: normalizedQuery,
-                  fields: ["title^0.4", "source_ref^0.5"],
+                  fields: ["content.de^2.5", "title.de^1", "source_ref.de^1"],
+                  type: "cross_fields",
+                  operator: "and",
+                  boost: 1.2
+                }
+              },
+              {
+                multi_match: {
+                  query: normalizedQuery,
+                  fields: ["title^0.4", "source_ref^0.5", "title.de^0.35", "source_ref.de^0.4"],
                   type: "best_fields",
                   fuzziness: "AUTO",
                   prefix_length: 1,
@@ -416,7 +471,14 @@ export class SearchIndexService {
               {
                 multi_match: {
                   query: normalizedQuery,
-                  fields: ["title^4", "source_ref^3", "extracted_text"],
+                  fields: [
+                    "title^4",
+                    "source_ref^3",
+                    "extracted_text",
+                    "title.de^3.5",
+                    "source_ref.de^2.5",
+                    "extracted_text.de^0.8"
+                  ],
                   type: "best_fields",
                   fuzziness: "AUTO"
                 }

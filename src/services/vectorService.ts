@@ -2,13 +2,18 @@ import axios from "axios";
 import { env } from "../config/env";
 import { Semaphore } from "../utils/concurrency";
 import { logger } from "../utils/logger";
-import { checkReachable, requestEmbeddings, type AiProviderConnection } from "./aiProviderClient";
+import { EmbeddingInputTooLargeError, checkReachable, requestEmbeddings, type AiProviderConnection } from "./aiProviderClient";
 import { getAiProviderConnection, getEmbeddingDimension, getEmbeddingModelName } from "./aiProviderSettingsService";
+import { applyEmbeddingTaskPrefix, capEmbeddingInput, truncateAtWordBoundary } from "./embeddingInputService";
 
 const EMBED_RETRY_BASE_DELAY_MS = 1_000;
 const EMBED_RETRY_MAX_DELAY_MS = 5 * 60 * 1000;
 const PROVIDER_HEALTH_CHECK_INTERVAL_MS = 30_000;
 const PROVIDER_HEALTH_CHECK_TIMEOUT_MS = 5_000;
+// How often a single oversized text may be shrunk before giving up. Each step
+// keeps 70%, so six steps reach ~12% of the original length.
+const MAX_INPUT_SHRINK_ATTEMPTS = 6;
+const INPUT_SHRINK_FACTOR = 0.7;
 
 // Shared across all VectorService instances and callers (ingestion, re-embedding,
 // live queries) so the configured cap on concurrent provider requests is process-wide,
@@ -73,7 +78,7 @@ export class VectorService {
       await this.waitForProviderReachable(connection);
 
       try {
-        return await this.requestEmbeddingsChecked(connection, texts, model);
+        return await this.embedAdaptive(connection, texts, model);
       } catch (error) {
         if (!axios.isAxiosError(error)) {
           throw error;
@@ -86,6 +91,53 @@ export class VectorService {
         );
         await delay(backoffMs);
       }
+    }
+  }
+
+  // A character budget cannot guarantee an input fits: EMBEDDING_MAX_INPUT_CHARS
+  // is calibrated on German prose, but an OCR'd table where words run together
+  // tokenizes far more densely and still blows the server's batch size. Rather
+  // than guessing a lower budget - which would needlessly truncate ordinary text
+  // - react to the actual rejection: split the batch to find the offending
+  // entry, then shrink that entry until it is accepted. Tokenizer-agnostic, so
+  // it keeps working across models and embedding servers.
+  //
+  // Runs inside the semaphore held by `embed`, so it must never call `embed`
+  // again - the semaphore is not reentrant and the default concurrency is 1.
+  private async embedAdaptive(
+    connection: AiProviderConnection,
+    texts: string[],
+    model: string,
+    shrinkAttempt = 0
+  ): Promise<number[][]> {
+    try {
+      return await this.requestEmbeddingsChecked(connection, texts, model);
+    } catch (error) {
+      if (!(error instanceof EmbeddingInputTooLargeError)) {
+        throw error;
+      }
+
+      if (texts.length > 1) {
+        const middle = Math.ceil(texts.length / 2);
+        const head = await this.embedAdaptive(connection, texts.slice(0, middle), model);
+        const tail = await this.embedAdaptive(connection, texts.slice(middle), model);
+        return [...head, ...tail];
+      }
+
+      if (shrinkAttempt >= MAX_INPUT_SHRINK_ATTEMPTS) {
+        throw error;
+      }
+
+      const shrunk = truncateAtWordBoundary(texts[0], Math.floor(texts[0].length * INPUT_SHRINK_FACTOR));
+      if (!shrunk || shrunk.length === texts[0].length) {
+        throw error;
+      }
+
+      logger.warn(
+        { originalLength: texts[0].length, shrunkLength: shrunk.length, shrinkAttempt: shrinkAttempt + 1 },
+        "embedding input rejected as too large, retrying with a shortened text"
+      );
+      return this.embedAdaptive(connection, [shrunk], model, shrinkAttempt + 1);
     }
   }
 
@@ -110,6 +162,31 @@ export class VectorService {
 
   async embedOne(text: string, model?: string): Promise<number[]> {
     const [embedding] = await this.embed([text], model);
+    return embedding;
+  }
+
+  // Document and query side must use the model's own task prefixes, otherwise
+  // their vectors land in different regions of the space (see
+  // embeddingInputService). `embed`/`embedOne` stay prefix-free for callers
+  // that are not doing retrieval - notably probeEmbeddingDimension.
+  async embedDocuments(texts: string[], model?: string): Promise<number[][]> {
+    if (texts.length === 0) {
+      return [];
+    }
+
+    const resolvedModel = model ?? (await getEmbeddingModelName());
+    return this.embed(
+      texts.map((text) => capEmbeddingInput(applyEmbeddingTaskPrefix(resolvedModel, "document", text))),
+      resolvedModel
+    );
+  }
+
+  async embedQuery(text: string, model?: string): Promise<number[]> {
+    const resolvedModel = model ?? (await getEmbeddingModelName());
+    const [embedding] = await this.embed(
+      [capEmbeddingInput(applyEmbeddingTaskPrefix(resolvedModel, "query", text))],
+      resolvedModel
+    );
     return embedding;
   }
 

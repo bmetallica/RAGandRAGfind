@@ -1,0 +1,43 @@
+{
+  "_hinweis": [
+    "Vorlage fuer eval/goldenset.json (dort erwartet npm run eval die Fragen).",
+    "Entweder diese Datei kopieren und die Fragen ersetzen, oder mit",
+    "npm run eval:bootstrap ein Template aus dem eigenen Bestand erzeugen.",
+    "",
+    "Gute Fragen nennen den Dateinamen NICHT - sonst misst der Lauf nur, ob die",
+    "Dateinamen-Suche funktioniert, statt der eigentlichen Retrieval-Qualitaet.",
+    "Ab etwa 30 Fragen werden die Zahlen aussagekraeftig, ab 50 stabil."
+  ],
+  "topK": 10,
+  "queries": [
+    {
+      "id": "dienstplan-schicht",
+      "query": "Wer war am Samstag für die Spätschicht eingeteilt?",
+      "expectedDocuments": ["Dienstplan_2017"],
+      "expectedSnippets": [],
+      "note": "expectedDocuments sind Teilstrings des sourceRef oder des Titels, klein/gross egal."
+    },
+    {
+      "id": "rechnung-betrag",
+      "query": "Wie hoch war der Rechnungsbetrag für die Materiallieferung?",
+      "knowledgeBase": "default",
+      "expectedDocuments": ["Rechnung_4711"],
+      "expectedSnippets": ["84,50"],
+      "note": "knowledgeBase ist optional und schraenkt die Suche auf einen Wissensraum ein."
+    },
+    {
+      "id": "handbuch-plural",
+      "query": "Welche Wartungsintervalle gelten für die Pumpen?",
+      "expectedDocuments": ["Betriebshandbuch"],
+      "expectedSnippets": [],
+      "note": "Plural in der Frage, Singular im Dokument - prueft das deutsche Stemming."
+    },
+    {
+      "id": "mehrere-treffer",
+      "query": "Gegen welche Version wurde die Erweiterung getestet?",
+      "expectedDocuments": ["monitor/README.md", "vikunja/README.md"],
+      "expectedSnippets": ["2.8.2"],
+      "note": "Mehrere erwartete Dokumente: Recall zaehlt, wie viele davon in den Top-k landen."
+    }
+  ]
+}

@@ -32,7 +32,7 @@ export interface AuthenticatedMcpPrincipal {
   knowledgeBaseIds: number[];
 }
 
-function normalizeSlug(value: string): string {
+export function normalizeSlug(value: string): string {
   return value
     .trim()
     .toLowerCase()

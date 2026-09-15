@@ -18,6 +18,13 @@ const mcpPrincipalFormEl = document.getElementById("mcp-principal-form");
 const mcpPrincipalResetEl = document.getElementById("mcp-principal-reset");
 const principalKnowledgeBaseOptionsEl = document.getElementById("principal-knowledge-base-options");
 const importKnowledgeBaseSelectEls = [...document.querySelectorAll("[data-knowledge-base-select]")];
+// Remember an explicit pick so re-rendering the options (after a knowledge base
+// was created, renamed or deleted) does not reset the select.
+importKnowledgeBaseSelectEls.forEach((select) => {
+  select.addEventListener("change", () => {
+    select.dataset.knowledgeBaseTouched = "true";
+  });
+});
 const documentTypeSelectEls = [...document.querySelectorAll("[data-document-type-select]")];
 const categorySelectEls = [...document.querySelectorAll("[data-category-select]")];
 const sourceTypeSelectEls = [...document.querySelectorAll("[data-source-type-select]")];
@@ -31,6 +38,7 @@ const adminUserFormEl = document.getElementById("admin-user-form");
 const adminUsersEl = document.getElementById("admin-users");
 const elasticsearchAdminStatusEl = document.getElementById("elasticsearch-admin-status");
 const elasticsearchReindexEl = document.getElementById("elasticsearch-reindex");
+const forceReembedEl = document.getElementById("embeddings-force-reembed");
 const classificationAdminStatusEl = document.getElementById("classification-admin-status");
 const classificationReindexEl = document.getElementById("classification-reindex");
 const documentTypeSettingsEl = document.getElementById("document-type-settings");
@@ -50,6 +58,13 @@ const aiProviderEmbeddingModelEl = document.getElementById("ai-provider-embeddin
 const aiProviderSummaryModelEl = document.getElementById("ai-provider-summary-model");
 const aiProviderClassifierModelEl = document.getElementById("ai-provider-classifier-model");
 const aiProviderEmbeddingDimensionEl = document.getElementById("ai-provider-embedding-dimension");
+const rerankerEnabledEl = document.getElementById("reranker-enabled");
+const rerankerBaseUrlEl = document.getElementById("reranker-base-url");
+const rerankerModelEl = document.getElementById("reranker-model");
+const rerankerTopNEl = document.getElementById("reranker-top-n");
+const rerankerStatusEl = document.getElementById("reranker-status");
+const apiKeyClearRowEl = document.getElementById("ai-provider-api-key-clear-row");
+const apiKeyClearEl = document.getElementById("ai-provider-api-key-clear");
 const aiProviderSettingsSummaryEl = document.getElementById("ai-provider-settings-summary");
 const documentPreviewEl = document.getElementById("document-preview");
 const documentPreviewFormEl = document.getElementById("document-preview-form");
@@ -315,7 +330,7 @@ function renderDocumentTypeSettings(settings) {
   renderDocumentTypeFilterOptions();
   renderCategoryFilterOptions();
 
-  if (!documentTypeSettingsEl) {
+  if (!documentTypeSettingsEl || isBeingEdited(documentTypeSettingsEl)) {
     return;
   }
 
@@ -438,6 +453,7 @@ function renderDocumentTypeSettings(settings) {
           })
         });
         showToast(`Dokumenttyp ${key} aktualisiert`);
+        releaseForm(documentTypeSettingsEl);
         await refreshDashboard();
       } catch (error) {
         showToast(error.message, true);
@@ -450,6 +466,11 @@ function renderRagfindSettings(settings = state.ragfindSettings) {
   state.ragfindSettings = settings;
 
   if (!ragfindKnowledgeBaseOptionsEl || !ragfindSettingsSummaryEl) {
+    return;
+  }
+
+  if (isBeingEdited(ragfindSettingsFormEl)) {
+    ragfindSettingsSummaryEl.textContent = "Ungespeicherte Aenderungen - automatische Aktualisierung pausiert.";
     return;
   }
 
@@ -499,6 +520,43 @@ function fillModelSelect(selectEl, models, selectedValue) {
   }
 }
 
+// Das Dashboard aktualisiert sich alle 20 Sekunden selbst (siehe setInterval am
+// Dateiende). Ohne diese Sperre ueberschreibt jede dieser Aktualisierungen die
+// Felder eines Formulars, das gerade ausgefuellt wird - beim Einstellen einer
+// neuen Provider-Verbindung sprangen dadurch alle Werte zurueck, bevor man auf
+// Speichern klicken konnte.
+const editedForms = new WeakSet();
+
+function watchFormEdits(element) {
+  if (!element) {
+    return;
+  }
+
+  for (const type of ["input", "change"]) {
+    element.addEventListener(type, () => editedForms.add(element));
+  }
+}
+
+// Explizit als "in Bearbeitung" markieren, wenn die Absicht eindeutig ist, auch
+// ohne dass ein input/change-Event geflogen ist - etwa nach dem Laden der
+// Modell-Liste fuer eine neue Server-URL.
+function markEdited(element) {
+  if (element) {
+    editedForms.add(element);
+  }
+}
+
+function isBeingEdited(element) {
+  return Boolean(element) && editedForms.has(element);
+}
+
+// Nach dem Speichern (oder bewusstem Verwerfen) darf wieder aktualisiert werden.
+function releaseForm(element) {
+  if (element) {
+    editedForms.delete(element);
+  }
+}
+
 function updateAiProviderApiKeyVisibility() {
   if (!aiProviderSelectEl || !aiProviderApiKeyFieldEl) {
     return;
@@ -507,14 +565,34 @@ function updateAiProviderApiKeyVisibility() {
   const isOpenAi = aiProviderSelectEl.value === "openai";
   aiProviderApiKeyFieldEl.classList.toggle("hidden", !isOpenAi);
   aiProviderApiKeyHintEl.textContent = isOpenAi
-    ? (state.aiProviderSettings.apiKeySet ? "Schluessel hinterlegt - leer lassen, um ihn beizubehalten." : "Erforderlich fuer OpenAI-kompatible Provider.")
+    ? (state.aiProviderSettings.apiKeySet
+        ? "Schluessel hinterlegt - leer lassen, um ihn beizubehalten."
+        : "Optional. Lokale Server (vLLM, llama.cpp, LM Studio, TGI) brauchen in der Regel keinen.")
     : "";
+
+  if (apiKeyClearRowEl) {
+    // Only offer to remove a key when there is one to remove.
+    const canClear = isOpenAi && Boolean(state.aiProviderSettings.apiKeySet);
+    apiKeyClearRowEl.classList.toggle("hidden", !canClear);
+    apiKeyClearRowEl.classList.toggle("flex", canClear);
+    if (!canClear && apiKeyClearEl) {
+      apiKeyClearEl.checked = false;
+    }
+  }
 }
 
 function renderAiProviderSettings(settings = state.aiProviderSettings) {
   state.aiProviderSettings = settings;
 
   if (!aiProviderSettingsFormEl) {
+    return;
+  }
+
+  // Ungespeicherte Eingaben haben Vorrang vor dem gespeicherten Stand.
+  if (isBeingEdited(aiProviderSettingsFormEl)) {
+    if (aiProviderSettingsSummaryEl) {
+      aiProviderSettingsSummaryEl.textContent = "Ungespeicherte Aenderungen - automatische Aktualisierung pausiert.";
+    }
     return;
   }
 
@@ -534,6 +612,23 @@ function renderAiProviderSettings(settings = state.aiProviderSettings) {
     : `Provider: ${settings.provider === "openai" ? "OpenAI-kompatibel" : "Ollama"}`;
 
   aiProviderReachabilityEl.textContent = "";
+
+  if (rerankerEnabledEl) {
+    rerankerEnabledEl.checked = Boolean(settings.rerankerEnabled);
+    rerankerBaseUrlEl.value = settings.rerankerBaseUrl || "";
+    rerankerModelEl.value = settings.rerankerModel || "";
+    rerankerTopNEl.value = settings.rerankerTopN != null ? String(settings.rerankerTopN) : "12";
+
+    if (!settings.rerankerEnabled) {
+      rerankerStatusEl.textContent = "Reranker deaktiviert - es greift das heuristische Reranking.";
+    } else if (!settings.rerankerHealth) {
+      rerankerStatusEl.textContent = "Reranker aktiviert.";
+    } else if (settings.rerankerHealth.reachable) {
+      rerankerStatusEl.textContent = `Reranker erreichbar (${settings.rerankerModel}).`;
+    } else {
+      rerankerStatusEl.textContent = `Reranker NICHT erreichbar: ${settings.rerankerHealth.error || "unbekannter Fehler"} - Suchen laufen solange mit heuristischem Reranking.`;
+    }
+  }
 }
 
 async function loadAiProviderModelOptions() {
@@ -565,6 +660,10 @@ async function loadAiProviderModelOptions() {
     fillModelSelect(aiProviderEmbeddingModelEl, models, aiProviderEmbeddingModelEl.value || state.aiProviderSettings.embeddingModel);
     fillModelSelect(aiProviderSummaryModelEl, models, aiProviderSummaryModelEl.value || state.aiProviderSettings.summaryModel);
     fillModelSelect(aiProviderClassifierModelEl, models, aiProviderClassifierModelEl.value || state.aiProviderSettings.classifierModel);
+
+    // Wer Modelle fuer eine URL laedt, ist mitten in der Konfiguration: ab hier
+    // darf die Hintergrund-Aktualisierung die Auswahl nicht zurueckstellen.
+    markEdited(aiProviderSettingsFormEl);
 
     aiProviderReachabilityEl.textContent = models.length
       ? `Server erreichbar - ${models.length} Modell(e) gefunden.`
@@ -729,21 +828,35 @@ function renderImportKnowledgeBaseOptions() {
   const defaultKnowledgeBaseId = getDefaultKnowledgeBaseId();
 
   importKnowledgeBaseSelectEls.forEach((select) => {
-    const previousValue = Number(select.value);
+    // The directory sync accepts an empty value, which makes the worker map one
+    // subdirectory per knowledge base instead of importing everything into one.
+    const allowAuto = select.hasAttribute("data-allow-auto-knowledge-base");
+    const previousRawValue = String(select.value || "");
+    const previousValue = Number(previousRawValue);
+    const keepAuto = allowAuto && select.dataset.knowledgeBaseInitialised === "true" && previousRawValue === "";
     const selectedKnowledgeBaseId = Number.isFinite(previousValue) && previousValue > 0
       ? previousValue
       : defaultKnowledgeBaseId;
 
-    if (!options.length) {
+    if (!options.length && !allowAuto) {
       select.innerHTML = '<option value="">Bitte zuerst eine Wissensdatenbank anlegen</option>';
       select.disabled = true;
       return;
     }
 
     select.disabled = false;
-    select.innerHTML = options
-      .map((knowledgeBase) => `<option value="${escapeHtml(knowledgeBase.id)}">${escapeHtml(knowledgeBase.name)}</option>`)
-      .join("");
+    select.innerHTML = [
+      ...(allowAuto ? ['<option value="">Automatisch (Unterordner je Wissensdatenbank)</option>'] : []),
+      ...options.map((knowledgeBase) => `<option value="${escapeHtml(knowledgeBase.id)}">${escapeHtml(knowledgeBase.name)}</option>`)
+    ].join("");
+    select.dataset.knowledgeBaseInitialised = "true";
+
+    // "Automatisch" is the default for the sync form, and an explicit pick by
+    // the user survives a re-render.
+    if (allowAuto && (keepAuto || !select.dataset.knowledgeBaseTouched)) {
+      select.value = "";
+      return;
+    }
 
     if (selectedKnowledgeBaseId && options.some((knowledgeBase) => Number(knowledgeBase.id) === Number(selectedKnowledgeBaseId))) {
       select.value = String(selectedKnowledgeBaseId);
@@ -1160,6 +1273,7 @@ function renderJobs(jobs) {
             <span class="rounded-full px-3 py-1 text-xs font-semibold ${job.state === "failed" ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-200" : job.state === "completed" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/35 dark:text-emerald-200" : "bg-mist text-spruce dark:bg-aurora/15 dark:text-aurora"}">${escapeHtml(job.state)}</span>
           </div>
           <pre class="mt-3 overflow-auto rounded-2xl bg-white/80 p-3 text-xs text-slate-700 dark:bg-black/30 dark:text-slate-200">${formatJson(job.data)}</pre>
+          ${job.result ? `<details class="mt-2 rounded-2xl bg-white/80 p-3 text-xs text-slate-700 dark:bg-black/30 dark:text-slate-200"><summary class="cursor-pointer font-semibold">Ergebnis</summary><pre class="mt-2 overflow-auto">${formatJson(job.result)}</pre></details>` : ""}
           ${job.failedReason ? `<p class="mt-2 text-xs text-rose-700 dark:text-rose-300">${escapeHtml(job.failedReason)}</p>` : ""}
           ${Array.isArray(job.stacktrace) && job.stacktrace.length ? `<details class="mt-2 rounded-2xl bg-rose-50/80 p-3 text-xs text-rose-900 dark:bg-rose-950/30 dark:text-rose-100"><summary class="cursor-pointer font-semibold">Stacktrace</summary><pre class="mt-2 overflow-auto whitespace-pre-wrap">${escapeHtml(job.stacktrace.join("\n\n"))}</pre></details>` : ""}
         </article>
@@ -1821,6 +1935,33 @@ if (elasticsearchReindexEl) {
   });
 }
 
+if (forceReembedEl) {
+  forceReembedEl.addEventListener("click", async () => {
+    if (!window.confirm("Alle Vektoren neu berechnen? Das laeuft im Hintergrund und kann je nach Bestand lange dauern.")) {
+      return;
+    }
+
+    const originalLabel = forceReembedEl.textContent;
+    forceReembedEl.disabled = true;
+    forceReembedEl.textContent = "Job wird eingereiht...";
+
+    try {
+      const result = await requestJson("/api/admin/embeddings/reembed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true })
+      });
+      showToast(`Re-Embedding eingereiht (Job ${result.jobId}, Modell ${result.targetModel})`);
+      await refreshDashboard();
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      forceReembedEl.disabled = false;
+      forceReembedEl.textContent = originalLabel;
+    }
+  });
+}
+
 if (classificationReindexEl) {
   classificationReindexEl.addEventListener("click", async () => {
     const originalLabel = classificationReindexEl.textContent;
@@ -1873,6 +2014,7 @@ if (ragfindSettingsFormEl) {
         body: JSON.stringify({ knowledgeBaseIds: selectedKnowledgeBaseIds })
       });
 
+      releaseForm(ragfindSettingsFormEl);
       renderRagfindSettings(settings);
       showToast("RAGfind-Konfiguration gespeichert");
     } catch (error) {
@@ -1902,7 +2044,12 @@ if (aiProviderSettingsFormEl) {
         apiKey: String(data.get("apiKey") || ""),
         embeddingModel: String(data.get("embeddingModel") || "").trim(),
         summaryModel: String(data.get("summaryModel") || "").trim(),
-        classifierModel: String(data.get("classifierModel") || "").trim()
+        classifierModel: String(data.get("classifierModel") || "").trim(),
+        rerankerEnabled: data.get("rerankerEnabled") === "on",
+        rerankerBaseUrl: String(data.get("rerankerBaseUrl") || "").trim(),
+        rerankerModel: String(data.get("rerankerModel") || "").trim(),
+        rerankerTopN: Number(data.get("rerankerTopN") || 12),
+        clearApiKey: data.get("clearApiKey") === "on"
       };
 
       const settings = await requestJson("/api/admin/ai-provider/settings", {
@@ -1911,6 +2058,7 @@ if (aiProviderSettingsFormEl) {
         body: JSON.stringify(payload)
       });
 
+      releaseForm(aiProviderSettingsFormEl);
       renderAiProviderSettings(settings);
       showToast("KI-Provider-Konfiguration gespeichert");
     } catch (error) {
@@ -1954,5 +2102,11 @@ themeToggleEl.addEventListener("click", () => {
 
 updateThemeToggle();
 updateAnalysisButtons();
+// Diese Bereiche enthalten Eingaben, die eine Hintergrund-Aktualisierung nicht
+// ueberschreiben darf (siehe isBeingEdited).
+watchFormEdits(aiProviderSettingsFormEl);
+watchFormEdits(ragfindSettingsFormEl);
+watchFormEdits(documentTypeSettingsEl);
+
 refreshDashboard().catch((error) => showToast(error.message, true));
 setInterval(() => refreshDashboard().catch(() => undefined), 20000);

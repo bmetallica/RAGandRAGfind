@@ -61,7 +61,7 @@ Es kombiniert:
 ### Ingestion
 
 - manuelle Uploads
-- Import-Verzeichnis-Sync über gemounteten Ordner
+- Import-Verzeichnis-Sync über gemounteten Ordner, standardmäßig mit einem Unterverzeichnis je Wissensdatenbank (siehe [Verzeichnis-Sync je Wissensdatenbank](#verzeichnis-sync-je-wissensdatenbank))
 - rekursives Website-Crawling mit Download-Unterstützung für Dateien
 - Git-Repository-Sync mit optionalem Branch- und Subpfad-Scope
 - Extraktion für PDF, DOCX, ODT, TXT, Markdown, HTML, JSON, YAML, SQL, JS, TS, Python, Shell-Skripte und andere Text-/Code-Formate
@@ -151,6 +151,182 @@ public/ragfind/    RAGfind-Frontend
 import-dir/        gemountetes Import-Verzeichnis für Sync-basierte Ingestion
 scripts/           Hilfsskripte für Deployment-Workflows
 ```
+
+## Verzeichnis-Sync je Wissensdatenbank
+
+Der Verzeichnis-Sync ordnet jedes direkte Unterverzeichnis von `IMPORT_DIR` genau einer
+Wissensdatenbank zu, damit sich Dokumente verschiedener Wissensräume nicht vermischen.
+Der Ordnername ist dabei der Slug der Wissensdatenbank:
+
+```
+import-dir/
+  default/       -> Wissensdatenbank "default"
+  vertraege/     -> Wissensdatenbank "vertraege"
+  technik/       -> Wissensdatenbank "technik"
+```
+
+Ablauf eines Syncs ohne explizit gewählte Wissensdatenbank:
+
+1. Für jede aktive Wissensdatenbank wird der passende Ordner angelegt, falls er fehlt.
+2. Jedes Unterverzeichnis wird rekursiv eingelesen und der Wissensdatenbank mit diesem Slug zugeordnet.
+3. Ein Unterverzeichnis ohne passende Wissensdatenbank wird automatisch als neue Wissensdatenbank angelegt
+   (abschaltbar über `SYNC_AUTO_CREATE_KNOWLEDGE_BASES=false`; dann wird der Ordner übersprungen und im Ergebnis gemeldet).
+4. Dateien, die direkt im Root-Verzeichnis liegen, landen in `default`.
+
+Wird im Admin-UI oder per `POST /api/jobs/sync` eine konkrete `knowledgeBaseId` gesetzt, gilt weiterhin
+das alte Verhalten: der komplette Baum unterhalb des Root-Verzeichnisses geht in genau diese Wissensdatenbank.
+Mit `SYNC_KNOWLEDGE_BASE_SUBDIRS=false` lässt sich die Unterverzeichnis-Zuordnung global deaktivieren.
+
+Die Deduplizierung greift pro Wissensdatenbank (`content_hash` + `knowledge_base_id`), dieselbe Datei kann
+also bewusst in mehreren Wissensdatenbanken liegen. Das Job-Ergebnis in der Queue-Ansicht zeigt pro
+Wissensdatenbank, wie viele Dateien gescannt, importiert und als Duplikat erkannt wurden.
+
+## Retrieval-Qualität messen
+
+`npm run eval` misst Recall@k, MRR, nDCG@k und Precision@1 gegen ein Goldenset echter Fragen.
+Der Lauf geht über denselben Suchpfad wie RAGfind und MCP (`executeSmartSearchQuery`), inklusive
+Reranking und Small-to-Big.
+
+```bash
+cp eval/goldenset.example.json eval/goldenset.json   # oder:
+npm run eval:bootstrap                               # Template aus dem eigenen Bestand
+# Fragen in eval/goldenset.json eintragen
+npm run eval -- --tag baseline
+npm run eval -- --tag nachher --baseline eval/results/baseline.json
+```
+
+Der Vergleich gegen eine Baseline zeigt pro Frage, was besser und was schlechter wurde — Mittelwerte
+allein verstecken Regressionen. Details und der geplante Ausbau stehen in `optimierungsplan.md`.
+
+`eval/goldenset.json` und `eval/results/` sind bewusst nicht im Repository: sie enthalten Fragen
+und Trefferlisten aus dem jeweils eigenen Dokumentbestand.
+
+## Deutsche Volltextsuche
+
+Neben den `simple`-tsvector-Spalten existieren deutsche Varianten (`*_tsv_de`, Migration 021) mit
+Snowball-Stemming und deutschen Stoppwörtern, damit „Dienstpläne" auch „Dienstplan" findet. Beide
+werden abgefragt, der bessere Rang gewinnt — `simple` bleibt zuständig für exakte Treffer auf
+Dateinamen, Aktenzeichen und Bezeichner. Elasticsearch spiegelt das über ein `.de`-Unterfeld mit
+dem Analyzer `german_rag`.
+
+Die Elasticsearch-Indizes tragen deshalb ein Versionssuffix (`rag-documents-v2`, `rag-chunks-v2`).
+Nach einem Deploy einmal *Reindex starten* im Admin-UI ausführen; die alten Indizes ohne Suffix
+können anschließend gelöscht werden.
+
+## Cross-Encoder-Reranking
+
+Die besten Kandidaten einer Suche werden optional von einem Reranking-Modell nachsortiert, das
+Frage und Passage gemeinsam bewertet. Konfiguriert wird das im Admin-UI unter *Config-AI*:
+Basis-URL, Modellname und wie viele Kandidaten (`top_n`) an den Reranker gehen. Die Kosten wachsen
+linear mit der Kandidatenzahl (gemessen mit Qwen3-Reranker-0.6B: 8 Kandidaten ~740 ms, 12 ~1090 ms,
+20 ~1800 ms), der Default liegt deshalb bei 12.
+
+Unterstützt wird jeder Server mit `POST /v1/rerank` (Fallback `/rerank`) im Cohere/Jina-Schema —
+llama.cpp mit `--reranking`, TEI, Infinity und vLLM. Empfehlung für deutschen Bestand:
+`bge-reranker-v2-m3` oder `Qwen3-Reranker-0.6B`.
+
+Der Reranker sitzt im Live-Suchpfad und ist deshalb abgesichert: harter Timeout, begrenzte
+Parallelität und 30 Sekunden Cooldown nach einem Fehler. Ist er aus, nicht erreichbar oder im
+Cooldown, greift automatisch das bisherige heuristische Reranking — die Suche liefert immer
+Ergebnisse, im Zweifel nur schlechter sortierte. `crossEncoderRerank` im Debug-Log und die
+`rerankMs`-Stufenzeit zeigen pro Anfrage, welcher Weg genommen wurde.
+
+## Embedding-Input
+
+Embeddet wird nicht der rohe Chunk, sondern ein Kontext-Header aus Dokumenttitel und
+Abschnittsüberschrift plus der Chunk-Inhalt, versehen mit dem Task-Prefix des jeweiligen Modells
+(`search_document:` / `search_query:` bei nomic, `passage:` / `query:` bei e5 — automatisch aus dem
+Modellnamen abgeleitet, überschreibbar via `EMBEDDING_DOCUMENT_PREFIX` / `EMBEDDING_QUERY_PREFIX`).
+Der Header steht ausschließlich im Embedding-Input, nie in `document_chunks.content`.
+
+`document_chunks.embedding_input_version` hält fest, mit welcher Input-Form ein Vektor entstanden
+ist. Ändert sich die Form ohne Modellwechsel, findet der normale Re-Embedding-Lauf nichts — dafür
+gibt es *Re-Embedding starten* im Bereich Config-AI (entspricht `POST /admin/embeddings/reembed`
+mit `{"force": true}`).
+
+## Betrieb mit vLLM
+
+vLLM spricht dieselbe OpenAI-kompatible API wie llama.cpp, LM Studio oder TGI. Im Admin-UI unter
+*Config-AI* deshalb Provider **OpenAI-kompatibel** wählen, als Basis-URL den `/v1`-Pfad eintragen
+(z. B. `http://host:8000/v1`) und das API-Key-Feld leer lassen — es ist optional und wird nur
+gebraucht, wenn der Server mit `--api-key` gestartet wurde.
+
+Die drei Rollen können auf getrennten vLLM-Instanzen laufen; Embedding und LLM teilen sich die
+Provider-Konfiguration, der Reranker hat eine eigene Basis-URL.
+
+```bash
+# Embeddings
+vllm serve nomic-ai/nomic-embed-text-v1.5 \
+  --served-model-name nomic-embed-text --trust-remote-code \
+  --port 8000 --max-model-len 2048
+
+# Reranker (Cross-Encoder)
+vllm serve BAAI/bge-reranker-v2-m3 \
+  --served-model-name bge-reranker-v2-m3 --port 8001
+
+# LLM für Klassifikation und Zusammenfassung
+vllm serve Qwen/Qwen2.5-7B-Instruct --port 8002
+```
+
+Die Flags zur Modellrolle heißen je nach vLLM-Version unterschiedlich (`--task embed` / `--task
+score` in älteren, `--runner pooling` in neueren Versionen). Statt sich darauf zu verlassen, lässt
+sich ein Endpunkt direkt prüfen:
+
+```bash
+npm run check:provider -- \
+  --base-url http://host:8000/v1 \
+  --embedding-model nomic-embed-text \
+  --llm-model Qwen/Qwen2.5-7B-Instruct \
+  --reranker-url http://host:8001 \
+  --reranker-model bge-reranker-v2-m3
+```
+
+Das Werkzeug fährt genau die Codepfade der Anwendung gegen den Endpunkt — Modell-Liste,
+Einzel- und Batch-Embedding, Dimension, Task-Prefixes, maximale Eingabelänge, Textgenerierung,
+JSON-Antwort für die Klassifikation und den Rerank-Endpunkt — und gibt am Ende die Werte aus, die
+in *Config-AI* einzutragen sind. Es braucht keine Datenbank und ändert nichts auf dem Server.
+
+Worauf zu achten ist:
+
+- **Eingabelänge:** Bei vLLM begrenzt `--max-model-len` eine einzelne Eingabe. Der Checker misst
+  das Limit und sagt, ob es für die Chunk-Größen dieser Anwendung reicht.
+- **Embedding-Dimension:** Weicht sie vom Bestand ab, ist vor dem Umschalten
+  `ALTER TABLE document_chunks ALTER COLUMN embedding TYPE VECTOR(n)` nötig, danach ein
+  vollständiges Re-Embedding. Das Admin-UI prüft die Dimension beim Speichern und lehnt einen
+  Konflikt ab.
+- **Task-Prefixes** werden aus dem Modellnamen abgeleitet. vLLM meldet oft den vollen HF-Pfad
+  (`nomic-ai/nomic-embed-text-v1.5`), was erkannt wird; bei exotischen Namen helfen
+  `EMBEDDING_DOCUMENT_PREFIX` / `EMBEDDING_QUERY_PREFIX`.
+- **Erste Inferenz schlägt fehl, Modell-Liste funktioniert:** Meldet der Server
+  `Failed to find C compiler` oder verweist auf `triton.knobs.build.impl`, fehlt im
+  vLLM-Container ein C-Compiler. vLLM kompiliert Triton-Kernel beim ersten echten
+  Aufruf; `/v1/models` läuft deshalb, `/v1/embeddings` nicht. Abhilfe: `gcc` bzw.
+  `build-essential` im vLLM-Image installieren oder `CC` auf einen vorhandenen
+  Compiler setzen. Ein solcher Fehler wird jetzt als
+  `AI provider at ... answered HTTP 500: ...` gemeldet — der Server war also
+  erreichbar, die Ursache liegt bei ihm.
+- **Strukturierte Antworten:** Lehnt ein Server `response_format: json_object` ab, wird die Anfrage
+  automatisch ohne dieses Feld wiederholt. Die Klassifikation funktioniert dadurch auch auf
+  Servern ohne Guided Decoding.
+
+## Eingabelimits des Modellservers
+
+Läuft das Embedding- oder Reranking-Modell auf llama.cpp, begrenzt dessen physische Batchgröße
+(`ubatch`, Default 512 Token) die Länge einer einzelnen Eingabe. Eine längere Eingabe wird mit
+HTTP 500 abgelehnt und würde ohne Gegenmaßnahme den ganzen Batch scheitern lassen. `CHUNK_SIZE`
+schützt davor nicht: es zählt mit `gpt-tokenizer`, während deutsche Texte im Modell-Tokenizer etwa
+doppelt so dicht kodieren — 300 „Chunk-Token" können 600 Modell-Token sein, OCR-Tabellen mit
+zusammengelaufenen Wörtern noch mehr.
+
+Der Stack geht damit zweistufig um:
+
+1. `EMBEDDING_MAX_INPUT_CHARS` bzw. `RERANKER_DOCUMENT_MAX_CHARS` kappen die Eingabe vorab.
+2. Lehnt der Server sie trotzdem ab, wird der Batch aufgeteilt, der auffällige Eintrag schrittweise
+   gekürzt und erneut geschickt. Das ist unabhängig vom Tokenizer und funktioniert deshalb auch
+   nach einem Modellwechsel.
+
+Sauberer ist es, den Server mit größerem `ubatch` zu starten (`llama-server -ub 2048 -b 2048`).
+Dann greifen die Kürzungen nie, und Reranking sowie Embedding sehen den vollständigen Text.
 
 ## Anforderungen
 
