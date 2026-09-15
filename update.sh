@@ -12,6 +12,7 @@
 #   ./update.sh                  Sicherung, git pull, Neubau, Start, Pruefung
 #   ./update.sh --skip-backup    ohne Sicherung (nur wenn anderweitig gesichert)
 #   ./update.sh --no-pull        nur neu bauen und starten, ohne git pull
+#   ./update.sh --stash          lokale Aenderungen beiseitelegen und danach behalten
 #   ./update.sh --help
 
 set -euo pipefail
@@ -20,13 +21,17 @@ cd "$(dirname "$0")"
 
 SKIP_BACKUP=0
 DO_PULL=1
+STASH=0
+STASH_GESETZT=0
+STAMP_VORAB="$(date +%Y%m%d-%H%M%S)"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --skip-backup) SKIP_BACKUP=1 ;;
     --no-pull) DO_PULL=0 ;;
+    --stash) STASH=1 ;;
     --help|-h)
-      sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '3,16p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -42,6 +47,34 @@ ok()    { printf '    \033[32mOK\033[0m   %s\n' "$*"; }
 warn()  { printf '    \033[33mHinweis\033[0m %s\n' "$*"; }
 fail()  { printf '    \033[31mFEHLER\033[0m %s\n' "$*" >&2; }
 
+# Bricht irgendein Schritt ab, soll niemand raten muessen, in welchem Zustand
+# die Installation ist. Ohne diese Meldung endete ein Fehlschlag mit einem
+# nackten Build-Log und der Frage, ob die Daten noch da sind.
+BACKUP_DIR=""
+abschluss() {
+  code=$?
+  [ "$code" = "0" ] && exit 0
+  printf '\n\033[31m==> Abgebrochen\033[0m\n' >&2
+  # Wurde vorher gestasht, darf der Abbruch den Arbeitsbaum nicht veraendert
+  # zuruecklassen - sonst sind die eigenen Aenderungen scheinbar verschwunden.
+  if [ "${STASH_GESETZT:-0}" = "1" ]; then
+    if git stash pop >/dev/null 2>&1; then
+      echo "    Beiseitegelegte Aenderungen wurden zurueckgeholt." >&2
+    else
+      echo "    ACHTUNG: beiseitegelegte Aenderungen liegen noch im Stash." >&2
+      echo "    Zurueckholen mit: git stash pop" >&2
+    fi
+  fi
+  echo "    Die laufende Installation wurde nicht veraendert: es gab kein 'down'," >&2
+  echo "    keine Volume-Aenderung und keine Migration ausserhalb des Starts." >&2
+  if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
+    echo "    Sicherung liegt unter: $BACKUP_DIR" >&2
+  fi
+  echo "    Laufen die Container noch? 'docker compose ps'" >&2
+  exit "$code"
+}
+trap abschluss EXIT
+
 # --- Voraussetzungen ---------------------------------------------------------
 info "Voraussetzungen"
 
@@ -53,17 +86,43 @@ docker compose version >/dev/null 2>&1 || { fail "'docker compose' nicht verfueg
 [ -f .env ] || { fail ".env fehlt - ohne Konfiguration startet der Stack nicht"; exit 1; }
 ok "git, docker compose, docker-compose.yml und .env vorhanden"
 
-# Ein unsauberer Arbeitsbaum und "git pull" vertragen sich nicht. Lieber hier
-# abbrechen als mitten im Update auf einen Konflikt laufen.
-if [ "$DO_PULL" = "1" ] && [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-  fail "Es gibt lokale Aenderungen. Erst committen oder verwerfen:"
-  git status --short | sed 's/^/           /'
-  echo "           (oder mit --no-pull nur neu bauen)" >&2
+# Gebaut wird aus dem Arbeitsbaum, nicht aus dem Git-Index. Eine geloeschte
+# nachverfolgte Datei laesst also den Build scheitern - unabhaengig davon, ob
+# gezogen wird. Deshalb wird dieser Fall immer geprueft.
+GELOESCHT="$(git ls-files --deleted 2>/dev/null || true)"
+if [ -n "$GELOESCHT" ]; then
+  fail "Diese nachverfolgten Dateien fehlen im Arbeitsverzeichnis:"
+  echo "$GELOESCHT" | sed 's/^/           /' >&2
+  echo "           Zurueckholen mit:" >&2
+  echo "               git checkout -- $(echo "$GELOESCHT" | tr '\n' ' ')" >&2
   exit 1
 fi
 
+# Ein unsauberer Arbeitsbaum und "git pull --ff-only" vertragen sich nicht.
+# Lieber hier abbrechen als mitten im Update auf einen Konflikt laufen - aber
+# mit den Befehlen, die tatsaechlich weiterhelfen.
+if [ "$DO_PULL" = "1" ] && [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+  if [ "$STASH" = "1" ]; then
+    info "Lokale Aenderungen beiseitelegen"
+    git stash push --include-untracked -m "update.sh $STAMP_VORAB"
+    STASH_GESETZT=1
+    ok "Beiseitegelegt - Rueckholen mit 'git stash pop'"
+  else
+    fail "Es gibt lokale Aenderungen:"
+    git status --short | sed 's/^/           /' >&2
+    cat >&2 <<'AUSWEG'
+           Moeglichkeiten:
+             ./update.sh --stash        Aenderungen beiseitelegen und danach behalten
+             git checkout -- <datei>    einzelne Aenderung verwerfen
+             git stash push -u          alles beiseitelegen (spaeter: git stash pop)
+             ./update.sh --no-pull      nur neu bauen, ohne zu ziehen
+AUSWEG
+    exit 1
+  fi
+fi
+
 # --- Sicherung ---------------------------------------------------------------
-STAMP="$(date +%Y%m%d-%H%M%S)"
+STAMP="$STAMP_VORAB"
 BACKUP_DIR="backups/$STAMP"
 
 if [ "$SKIP_BACKUP" = "0" ]; then
@@ -223,6 +282,15 @@ ok "Alle Dienste laufen"
 LETZTE_MIGRATION="$(ls migrations/*.sql 2>/dev/null | sort | tail -1)"
 if [ -n "$LETZTE_MIGRATION" ]; then
   ok "Migrationen bis $(basename "$LETZTE_MIGRATION") im Image enthalten und beim Start angewandt"
+fi
+
+if [ "$STASH_GESETZT" = "1" ]; then
+  info "Beiseitegelegte Aenderungen zurueckholen"
+  if git stash pop; then
+    ok "Zurueckgeholt"
+  else
+    warn "Konflikt beim Zurueckholen - die Aenderungen liegen weiter in 'git stash list'"
+  fi
 fi
 
 info "Fertig"

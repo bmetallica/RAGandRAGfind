@@ -17,7 +17,6 @@ RUN npm ci
 COPY src ./src
 COPY public ./public
 COPY migrations ./migrations
-COPY .env.example ./
 RUN npm run build
 
 FROM node:20-bookworm-slim AS runtime
