@@ -22,3 +22,6 @@ Thumbs.db
 
 *.log
 coverage/
+
+# Sicherungen aus update.sh (Datenbank-Dumps, Originaldateien)
+backups/
