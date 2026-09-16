@@ -169,6 +169,24 @@ Deduplication is per knowledge base (`content_hash` + `knowledge_base_id`), so t
 deliberately live in several knowledge bases. The job result in the queue view reports scanned,
 imported, and duplicate counts per knowledge base.
 
+## Crawl options
+
+When starting a crawl you can control separately what is fetched besides the pages themselves:
+
+- **Download linked documents** (default: on) — PDF, DOCX, ODT, TXT, and Markdown are downloaded
+  and ingested like an upload, including text extraction and OCR.
+- **Download images (OCR)** (default: off) — every image found is read via OCR.
+
+The split has a practical reason: both used to hang off the same switch, so a crawl over an
+image-heavy site pushed every logo and map tile through Ghostscript and Tesseract. That takes orders
+of magnitude longer than the rest of the crawl. Images are worth it when they are scanned documents
+— otherwise not.
+
+A deselected file type is not fetched as a page either, not merely left un-ingested.
+
+Via the API the switches are `downloadDocuments` and `downloadImages` on `POST /api/jobs/crawl`;
+when absent the same defaults apply. Scheduled crawls can carry them in the schedule payload.
+
 ## Updating
 
 `./update.sh` brings a running installation up to date without losing data:

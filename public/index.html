@@ -133,6 +133,31 @@
               <input name="maxDepth" type="number" min="0" value="2" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" />
               <label class="mt-4 block text-sm font-medium">Wissensdatenbank</label>
               <select name="knowledgeBaseId" data-knowledge-base-select class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
+
+              <div class="mt-4 space-y-3 rounded-2xl border border-black/10 bg-cloud/55 px-4 py-3 dark:border-white/10 dark:bg-dusk/65">
+                <label class="flex items-start gap-3 text-sm">
+                  <input type="checkbox" name="downloadDocuments" class="mt-1" checked />
+                  <span>
+                    <span class="block font-semibold text-black/80 dark:text-white/85">Verlinkte Dokumente mitladen</span>
+                    <span class="mt-1 block text-xs text-black/55 dark:text-white/50">
+                      PDF, DOCX, ODT, TXT und Markdown werden heruntergeladen und wie ein Upload
+                      eingelesen &mdash; inklusive Textextraktion und OCR, falls n&ouml;tig.
+                    </span>
+                  </span>
+                </label>
+                <label class="flex items-start gap-3 text-sm">
+                  <input type="checkbox" name="downloadImages" class="mt-1" />
+                  <span>
+                    <span class="block font-semibold text-black/80 dark:text-white/85">Bilder mitladen (OCR)</span>
+                    <span class="mt-1 block text-xs text-black/55 dark:text-white/50">
+                      Jedes gefundene Bild wird per OCR gelesen. Auf bildlastigen Seiten dauert das
+                      um Gr&ouml;&szlig;enordnungen l&auml;nger als der restliche Crawl &mdash; nur
+                      aktivieren, wenn die Bilder gescannte Dokumente sind.
+                    </span>
+                  </span>
+                </label>
+              </div>
+
               <button class="mt-5 rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Crawl enqueue</button>
             </form>
 

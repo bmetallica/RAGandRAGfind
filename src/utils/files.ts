@@ -33,7 +33,17 @@ export function isImage(fileName: string): boolean {
   return imageExtensions.has(getExtension(fileName));
 }
 
+function stripQuery(url: string): string {
+  return url.split("?")[0] ?? url;
+}
+
+// Bewusst ohne Bilder: ein Crawl laedt sonst jedes Logo und jede Kartenkachel
+// herunter und jagt sie durch OCR. Bilder haben deshalb eine eigene Pruefung
+// und im Crawler einen eigenen Schalter.
 export function isDownloadableDocument(url: string): boolean {
-  const cleanUrl = url.split("?")[0] ?? url;
-  return isSupportedDocument(cleanUrl);
+  return documentExtensions.has(getExtension(stripQuery(url)));
+}
+
+export function isDownloadableImage(url: string): boolean {
+  return isImage(stripQuery(url));
 }

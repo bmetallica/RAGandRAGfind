@@ -6,12 +6,18 @@ import * as cheerio from "cheerio";
 import mime from "mime-types";
 import { env } from "../config/env";
 import { IngestionService } from "./ingestionService";
-import { isDownloadableDocument } from "../utils/files";
+import { isDownloadableDocument, isDownloadableImage } from "../utils/files";
 
 interface CrawlOptions {
   startUrl: string;
   maxDepth?: number;
   knowledgeBaseId?: number | null;
+  // Verlinkte Dokumente (PDF, DOCX, ODT, TXT, MD) mitladen und ingestieren.
+  downloadDocuments?: boolean;
+  // Bilder mitladen. Getrennt, weil jedes Bild durch OCR laeuft: auf einer
+  // bildlastigen Seite ist das um Groessenordnungen teurer als der Rest des
+  // Crawls. Standardmaessig aus.
+  downloadImages?: boolean;
 }
 
 interface QueueEntry {
@@ -85,6 +91,10 @@ export class CrawlService {
   async crawl(options: CrawlOptions): Promise<{ pages: number; files: number; duplicates: number }> {
     const startUrl = new URL(options.startUrl);
     const maxDepth = options.maxDepth ?? env.CRAWL_DEFAULT_MAX_DEPTH;
+    const downloadDocuments = options.downloadDocuments !== false;
+    const downloadImages = options.downloadImages === true;
+    const soll = (url: string): boolean =>
+      (downloadDocuments && isDownloadableDocument(url)) || (downloadImages && isDownloadableImage(url));
     const allowedOrigins = new Set<string>([startUrl.origin]);
     const visited = new Set<string>();
     const queue: QueueEntry[] = [{ url: startUrl.toString(), depth: 0 }];
@@ -110,7 +120,7 @@ export class CrawlService {
       visited.add(finalUrl);
 
       const contentType = response.headers["content-type"] ?? mime.lookup(finalUrl) ?? "application/octet-stream";
-      if (!String(contentType).includes("text/html") && isDownloadableDocument(finalUrl)) {
+      if (!String(contentType).includes("text/html") && soll(finalUrl)) {
         const result = await this.ingestRemoteFile(finalUrl, Buffer.from(response.data), options.knowledgeBaseId ?? null);
         files += 1;
         if (result.duplicate) {
@@ -158,7 +168,7 @@ export class CrawlService {
           continue;
         }
 
-        if (isDownloadableDocument(resolved.toString())) {
+        if (soll(resolved.toString())) {
           const fileResponse = await axios.get<ArrayBuffer>(resolved.toString(), {
             responseType: "arraybuffer",
             timeout: 30_000,
@@ -169,6 +179,12 @@ export class CrawlService {
           if (result.duplicate) {
             duplicates += 1;
           }
+          continue;
+        }
+
+        // Ein abgewaehlter Dateityp darf auch nicht als Seite in die
+        // Warteschlange wandern - sonst wuerde er trotzdem abgerufen.
+        if (isDownloadableDocument(resolved.toString()) || isDownloadableImage(resolved.toString())) {
           continue;
         }
 
