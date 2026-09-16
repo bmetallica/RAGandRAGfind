@@ -864,7 +864,14 @@ function renderMultisourceViewerPage(viewer: ViewerContent): string {
       if (payload.kind === "html") {
         const iframe = document.createElement("iframe");
         iframe.className = "viewer-iframe";
-        iframe.setAttribute("sandbox", "allow-same-origin allow-scripts");
+        // Weder allow-scripts noch allow-same-origin: der Rahmen zeigt fremdes,
+        // gecrawltes HTML. Zusammen heben diese beiden Werte die Sandbox
+        // gegenseitig auf - der Inhalt koennte dann auf das RAGfind-Dokument
+        // zugreifen. Ohne sie bekommt der Rahmen einen eigenen, leeren Ursprung
+        // und fuehrt nichts aus; Stylesheets und Bilder laedt er weiterhin.
+        // allow-popups erlaubt, dass ein Link der Archivkopie die echte Seite
+        // in einem neuen Tab oeffnet.
+        iframe.setAttribute("sandbox", "allow-popups allow-popups-to-escape-sandbox");
         iframe.srcdoc = payload.renderedHtml;
         renderedPane.appendChild(iframe);
       } else {
@@ -893,12 +900,23 @@ async function buildViewerContent(document: NonNullable<Awaited<ReturnType<typeo
   const file = await getDocumentFile(document.id);
   const absolutePath = file?.relativePath ? path.join(env.ORIGINAL_STORAGE_DIR, file.relativePath) : null;
   const localText = await readTextFileIfPresent(absolutePath);
-  const rawText = localText ?? document.extractedText;
-  const kind = detectViewerKind(document, rawText);
+  const kind = detectViewerKind(document, localText ?? document.extractedText);
+
+  // Bei HTML sind das zwei verschiedene Dinge mit je eigenem Tab: die
+  // gespeicherte Datei ist die Seite ("Ansicht"), der extrahierte Text ist die
+  // lesbare Fassung ("Plaintext"). Wuerde hier wie bei allen anderen Arten die
+  // lokale Datei fuer beides genommen, zeigte der Plaintext-Tab bei gecrawlten
+  // Seiten HTML-Quelltext statt Text.
+  const storedPage = kind === "html" ? localText : null;
+  const rawText = storedPage ? document.extractedText : (localText ?? document.extractedText);
 
   let renderedHtml = "";
   if (kind === "html") {
-    renderedHtml = rawText;
+    // Ohne gespeicherte Seite - etwa bei vor dieser Aenderung gecrawlten
+    // Dokumenten - bleibt nur der extrahierte Text. Als <pre> verpackt ist er
+    // im Rahmen wenigstens lesbar statt eine Zeile ohne Umbrueche.
+    renderedHtml = storedPage
+      ?? `<!doctype html><meta charset="utf-8"><body style="margin:0;padding:16px;font:14px/1.6 system-ui,sans-serif"><pre style="white-space:pre-wrap;word-break:break-word;margin:0">${escapeHtml(document.extractedText)}</pre></body>`;
   } else if (kind === "markdown") {
     renderedHtml = await renderMarkdown(rawText);
   } else if (kind === "code") {
