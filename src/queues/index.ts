@@ -6,6 +6,10 @@ export interface CrawlJobPayload {
   startUrl: string;
   maxDepth?: number;
   knowledgeBaseId?: number | null;
+  // Fehlt der Wert, gilt der jeweilige Standard aus CrawlService: Dokumente ja,
+  // Bilder nein.
+  downloadDocuments?: boolean;
+  downloadImages?: boolean;
 }
 
 export interface SyncJobPayload {

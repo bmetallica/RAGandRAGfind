@@ -43,7 +43,12 @@ export class SchedulerService {
           if (row.job_type === "crawl") {
             await crawlQueue.add("crawl", {
               startUrl: String(row.payload.startUrl),
-              maxDepth: Number(row.payload.maxDepth ?? env.CRAWL_DEFAULT_MAX_DEPTH)
+              maxDepth: Number(row.payload.maxDepth ?? env.CRAWL_DEFAULT_MAX_DEPTH),
+              // Wurde bisher verschluckt: ein geplanter Crawl landete dadurch
+              // immer in keiner Wissensdatenbank, egal was im Zeitplan stand.
+              knowledgeBaseId: typeof row.payload.knowledgeBaseId === "number" ? row.payload.knowledgeBaseId : null,
+              downloadDocuments: row.payload.downloadDocuments !== false,
+              downloadImages: row.payload.downloadImages === true
             });
             return;
           }

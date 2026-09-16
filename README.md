@@ -181,6 +181,25 @@ Die Deduplizierung greift pro Wissensdatenbank (`content_hash` + `knowledge_base
 also bewusst in mehreren Wissensdatenbanken liegen. Das Job-Ergebnis in der Queue-Ansicht zeigt pro
 Wissensdatenbank, wie viele Dateien gescannt, importiert und als Duplikat erkannt wurden.
 
+## Crawl-Optionen
+
+Beim Anlegen eines Crawls lässt sich getrennt steuern, was neben den Seiten selbst geholt wird:
+
+- **Verlinkte Dokumente mitladen** (Standard: an) — PDF, DOCX, ODT, TXT und Markdown werden
+  heruntergeladen und wie ein Upload eingelesen, inklusive Textextraktion und OCR.
+- **Bilder mitladen (OCR)** (Standard: aus) — jedes gefundene Bild wird per OCR gelesen.
+
+Die Trennung hat einen praktischen Grund: früher hingen beide am selben Schalter, weshalb ein Crawl
+über eine bildlastige Seite jedes Logo und jede Kartenkachel durch Ghostscript und Tesseract
+schickte. Das dauert um Größenordnungen länger als der restliche Crawl. Bilder lohnen sich, wenn es
+gescannte Dokumente sind — sonst nicht.
+
+Ein abgewählter Dateityp wird auch nicht als Seite abgerufen, nicht nur nicht ingestiert.
+
+Über die API entsprechen die Schalter `downloadDocuments` und `downloadImages` in
+`POST /api/jobs/crawl`; fehlen sie, gelten dieselben Standardwerte. Für geplante Crawls können sie
+im Payload des Zeitplans stehen.
+
 ## Aktualisieren
 
 `./update.sh` bringt eine laufende Installation auf den neuesten Stand, ohne Daten zu verlieren:

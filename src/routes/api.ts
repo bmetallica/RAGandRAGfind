@@ -3418,8 +3418,15 @@ export function createApiRouter(schedulerService: SchedulerService) {
 
       const maxDepth = Number(request.body.maxDepth ?? env.CRAWL_DEFAULT_MAX_DEPTH);
       const knowledgeBaseId = parseKnowledgeBaseId(request.body.knowledgeBaseId);
-      const job = await crawlQueue.add("crawl", { startUrl, maxDepth, knowledgeBaseId });
-      response.status(202).json({ jobId: job.id, startUrl, maxDepth, knowledgeBaseId });
+      // Fehlt das Feld, bleibt es beim bisherigen Verhalten: Dokumente ja.
+      // Bilder sind neu und standardmaessig aus, weil jedes davon durch OCR geht.
+      const downloadDocuments = request.body.downloadDocuments === undefined
+        ? true
+        : request.body.downloadDocuments === true || request.body.downloadDocuments === "true";
+      const downloadImages = request.body.downloadImages === true || request.body.downloadImages === "true";
+
+      const job = await crawlQueue.add("crawl", { startUrl, maxDepth, knowledgeBaseId, downloadDocuments, downloadImages });
+      response.status(202).json({ jobId: job.id, startUrl, maxDepth, knowledgeBaseId, downloadDocuments, downloadImages });
     } catch (error) {
       next(error);
     }

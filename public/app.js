@@ -1708,7 +1708,9 @@ function onSubmitJson(form, url, buildPayload) {
 onSubmitJson(document.getElementById("crawl-form"), "/api/jobs/crawl", (data) => ({
   startUrl: data.get("startUrl"),
   maxDepth: Number(data.get("maxDepth") || 0),
-  knowledgeBaseId: Number(data.get("knowledgeBaseId") || 0) || null
+  knowledgeBaseId: Number(data.get("knowledgeBaseId") || 0) || null,
+  downloadDocuments: data.get("downloadDocuments") === "on",
+  downloadImages: data.get("downloadImages") === "on"
 }));
 
 onSubmitJson(document.getElementById("sync-form"), "/api/jobs/sync", (data) => ({
