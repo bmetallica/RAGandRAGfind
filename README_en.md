@@ -259,6 +259,16 @@ the previous heuristic reranking takes over automatically — search always retu
 ordered less well. `crossEncoderRerank` in the debug log and the `rerankMs` stage timing show which
 path each request took.
 
+Crawled pages are shown as pages: the stored HTML copy is loaded into a frame via
+`/view/<id>/page`, with stylesheets, images, and fonts. That endpoint sets its own Content-Security-
+Policy allowing styles, images, fonts, and media from anywhere while forbidding scripts; the frame
+itself is additionally sandboxed, and scripts are stripped at save time anyway. A `<base>` tag in the
+copy makes relative paths resolve against the original site. The title and source line are clickable
+links to the live page.
+
+Pages crawled before this storage existed have no HTML copy and appear as text. Re-crawling the same
+address attaches the copy afterwards, even when the text is unchanged.
+
 ## Embedding input
 
 What gets embedded is not the raw chunk but a context header built from the document title and

@@ -127,7 +127,23 @@ export class IngestionService {
       [contentHash, input.knowledgeBaseId ?? null]
     );
     if (preflightExisting.rowCount) {
-      return { documentId: preflightExisting.rows[0].id, duplicate: true, chunkCount: 0 };
+      const existingId = preflightExisting.rows[0].id;
+      // Inhaltlich unveraendert, aber vielleicht fehlt die Originaldatei: bei
+      // Dokumenten aus der Zeit vor deren Speicherung, oder wenn die Datei
+      // damals nicht erreichbar war. Ohne diesen Nachtrag koennte ein erneuter
+      // Durchlauf das nie heilen - er bricht hier ab, bevor die Datei angehaengt
+      // wird, und liefert nur "duplicate".
+      await this.attachMissingOriginalFile(existingId, {
+        originalFilePath: input.originalFilePath,
+        originalFileName: sanitizedOriginalFileName,
+        originalExternalUrl: sanitizedOriginalExternalUrl ?? sanitizedSourceUrl,
+        sourceType: sanitizedSourceType,
+        sourceRef: sanitizedSourceRef,
+        mimeType: sanitizedMimeType,
+        title: sanitizedTitle
+      });
+
+      return { documentId: existingId, duplicate: true, chunkCount: 0 };
     }
 
     const heuristicDocumentType = inferDocumentType({
@@ -196,7 +212,18 @@ export class IngestionService {
       if (existing.rowCount) {
         await client.query("COMMIT");
         duplicateDocumentId = existing.rows[0].id;
-        return { documentId: existing.rows[0].id, duplicate: true, chunkCount: 0 };
+        // Wie oben im Vorab-Check - hier greift der Fall, wenn zwei Ingests
+        // parallel dasselbe Dokument sehen.
+        await this.attachMissingOriginalFile(duplicateDocumentId, {
+          originalFilePath: input.originalFilePath,
+          originalFileName: sanitizedOriginalFileName,
+          originalExternalUrl: sanitizedOriginalExternalUrl ?? sanitizedSourceUrl,
+          sourceType: sanitizedSourceType,
+          sourceRef: sanitizedSourceRef,
+          mimeType: sanitizedMimeType,
+          title: sanitizedTitle
+        });
+        return { documentId: duplicateDocumentId, duplicate: true, chunkCount: 0 };
       }
 
       const documentInsert = await client.query<{ id: number }>(
@@ -314,6 +341,63 @@ export class IngestionService {
           logger.warn({ err: error, documentId: documentIdToSync }, "failed to sync document to elasticsearch after ingestion");
         });
       }
+    }
+  }
+
+  // Haengt einem bereits vorhandenen Dokument die Originaldatei nachtraeglich an,
+  // aber nur wenn dort noch keine lokale Kopie liegt. Eine vorhandene Kopie wird
+  // nie ersetzt: der gespeicherte Inhalt gehoert zum Textstand des Dokuments.
+  private async attachMissingOriginalFile(
+    documentId: number,
+    input: {
+      originalFilePath?: string;
+      originalFileName: string | null;
+      originalExternalUrl: string | null;
+      sourceType: string;
+      sourceRef: string;
+      mimeType: string | null;
+      title: string | null;
+    }
+  ): Promise<void> {
+    if (!input.originalFilePath) {
+      return;
+    }
+
+    try {
+      const existingFile = await pool.query<{ relative_path: string | null }>(
+        "SELECT relative_path FROM document_files WHERE document_id = $1 LIMIT 1",
+        [documentId]
+      );
+      if (existingFile.rows[0]?.relative_path) {
+        return;
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await upsertDocumentFile(client, documentId, {
+          localPath: input.originalFilePath,
+          externalUrl: input.originalExternalUrl,
+          originalName: input.originalFileName ?? input.title ?? input.sourceRef,
+          mimeType: input.mimeType,
+          metadata: {
+            sourceType: input.sourceType,
+            sourceRef: input.sourceRef,
+            attachedLater: true
+          }
+        });
+        await client.query("COMMIT");
+        logger.info({ documentId }, "attached a missing original file to an existing document");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      // Das Dokument selbst ist in Ordnung - ein fehlgeschlagener Nachtrag darf
+      // die Ingestion nicht scheitern lassen.
+      logger.warn({ err: error, documentId }, "failed to attach a missing original file to an existing document");
     }
   }
 

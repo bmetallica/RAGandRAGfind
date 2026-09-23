@@ -99,6 +99,10 @@ interface ViewerContent {
   kind: ViewerKind;
   rawText: string;
   renderedHtml: string;
+  // Gesetzt, wenn eine gespeicherte HTML-Kopie existiert: der Rahmen laedt sie
+  // dann ueber diese URL statt ueber srcdoc.
+  pageUrl: string | null;
+  sourceUrl: string | null;
   originalUrl: string | null;
   originalName: string | null;
 }
@@ -618,6 +622,8 @@ function renderMultisourceViewerPage(viewer: ViewerContent): string {
     mimeType: viewer.mimeType,
     rawText: viewer.rawText,
     renderedHtml: viewer.renderedHtml,
+    pageUrl: viewer.pageUrl,
+    sourceUrl: viewer.sourceUrl,
     originalUrl: viewer.originalUrl,
     originalName: viewer.originalName
   }).replace(/</g, "\\u003c");
@@ -789,6 +795,12 @@ function renderMultisourceViewerPage(viewer: ViewerContent): string {
       .viewer-raw-shell {
         padding: 0;
       }
+      .source a {
+        color: var(--accent);
+        text-decoration: none;
+        border-bottom: 1px solid var(--accent-soft);
+      }
+      .source a:hover { border-bottom-color: var(--accent); }
       .viewer-iframe {
         width: 100%;
         min-height: 78vh;
@@ -841,10 +853,15 @@ function renderMultisourceViewerPage(viewer: ViewerContent): string {
         </div>
         <div class="actions">
           <a class="action" href="/">Zur Suche</a>
-          ${viewer.originalUrl ? `<a class="action" href="${escapeHtml(viewer.originalUrl)}" target="_blank" rel="noreferrer">Originaldatei</a>` : ""}
+          ${viewer.sourceUrl ? `<a class="action" href="${escapeHtml(viewer.sourceUrl)}" target="_blank" rel="noreferrer noopener">Originalseite &#8599;</a>` : ""}
+          ${viewer.originalUrl ? `<a class="action" href="${escapeHtml(viewer.originalUrl)}" target="_blank" rel="noreferrer">${viewer.pageUrl ? "Gespeicherte Kopie" : "Originaldatei"}</a>` : ""}
         </div>
       </div>
-      <p class="source">${escapeHtml(viewer.sourceRef)}</p>
+      <p class="source">${
+        viewer.sourceUrl
+          ? `<a href="${escapeHtml(viewer.sourceUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(viewer.sourceRef)}</a>`
+          : escapeHtml(viewer.sourceRef)
+      }</p>
 
       <section class="viewer">
         <div class="viewer-tabs">
@@ -861,18 +878,19 @@ function renderMultisourceViewerPage(viewer: ViewerContent): string {
       const rawPane = document.getElementById("pane-raw");
       const tabs = [...document.querySelectorAll(".viewer-tab")];
 
-      if (payload.kind === "html") {
+      if (payload.pageUrl) {
         const iframe = document.createElement("iframe");
         iframe.className = "viewer-iframe";
         // Weder allow-scripts noch allow-same-origin: der Rahmen zeigt fremdes,
         // gecrawltes HTML. Zusammen heben diese beiden Werte die Sandbox
         // gegenseitig auf - der Inhalt koennte dann auf das RAGfind-Dokument
         // zugreifen. Ohne sie bekommt der Rahmen einen eigenen, leeren Ursprung
-        // und fuehrt nichts aus; Stylesheets und Bilder laedt er weiterhin.
-        // allow-popups erlaubt, dass ein Link der Archivkopie die echte Seite
-        // in einem neuen Tab oeffnet.
+        // und fuehrt nichts aus; Stylesheets, Bilder und Schriften laedt er
+        // weiterhin. allow-popups erlaubt, dass ein Link der Kopie die echte
+        // Seite in einem neuen Tab oeffnet.
         iframe.setAttribute("sandbox", "allow-popups allow-popups-to-escape-sandbox");
-        iframe.srcdoc = payload.renderedHtml;
+        iframe.setAttribute("referrerpolicy", "no-referrer");
+        iframe.src = payload.pageUrl;
         renderedPane.appendChild(iframe);
       } else {
         renderedPane.className = "viewer-pane active viewer-rendered " + payload.kind;
@@ -907,16 +925,23 @@ async function buildViewerContent(document: NonNullable<Awaited<ReturnType<typeo
   // lesbare Fassung ("Plaintext"). Wuerde hier wie bei allen anderen Arten die
   // lokale Datei fuer beides genommen, zeigte der Plaintext-Tab bei gecrawlten
   // Seiten HTML-Quelltext statt Text.
-  const storedPage = kind === "html" ? localText : null;
-  const rawText = storedPage ? document.extractedText : (localText ?? document.extractedText);
+  const hasStoredPage = kind === "html" && localText !== null;
+  const rawText = hasStoredPage ? document.extractedText : (localText ?? document.extractedText);
 
   let renderedHtml = "";
-  if (kind === "html") {
-    // Ohne gespeicherte Seite - etwa bei vor dieser Aenderung gecrawlten
-    // Dokumenten - bleibt nur der extrahierte Text. Als <pre> verpackt ist er
-    // im Rahmen wenigstens lesbar statt eine Zeile ohne Umbrueche.
-    renderedHtml = storedPage
-      ?? `<!doctype html><meta charset="utf-8"><body style="margin:0;padding:16px;font:14px/1.6 system-ui,sans-serif"><pre style="white-space:pre-wrap;word-break:break-word;margin:0">${escapeHtml(document.extractedText)}</pre></body>`;
+  if (hasStoredPage) {
+    // Die Seite wird NICHT eingebettet, sondern vom Endpunkt unten geladen.
+    // Ueber srcdoc erbt der Rahmen die CSP des Elterndokuments und hat keine
+    // eigene Adresse - beides sorgt dafuer, dass externe Stylesheets und Bilder
+    // je nach Umgebung stillschweigend wegfallen. Mit eigener URL laedt der
+    // Browser Unterresourcen normal, und der Endpunkt setzt eine passende CSP.
+    renderedHtml = "";
+  } else if (kind === "html") {
+    // Kein gespeichertes HTML - etwa bei Seiten, die vor dessen Einfuehrung
+    // gecrawlt wurden. Dann gibt es nur den extrahierten Text; als Textansicht
+    // ist er wenigstens lesbar. Styling laesst sich nicht rekonstruieren, die
+    // Seite wurde damals nie gespeichert.
+    renderedHtml = renderPlainText(document.extractedText);
   } else if (kind === "markdown") {
     renderedHtml = await renderMarkdown(rawText);
   } else if (kind === "code") {
@@ -934,6 +959,8 @@ async function buildViewerContent(document: NonNullable<Awaited<ReturnType<typeo
     kind,
     rawText,
     renderedHtml,
+    pageUrl: hasStoredPage ? `/view/${document.id}/page` : null,
+    sourceUrl: document.sourceUrl ?? (/^https?:\/\//i.test(document.sourceRef) ? document.sourceRef : null),
     originalUrl: file ? `/api/documents/${document.id}/original` : null,
     originalName: file?.originalName ?? null
   };
@@ -1186,6 +1213,62 @@ async function start() {
       const viewer = await buildViewerContent(document);
       response.type("text/html; charset=utf-8");
       response.send(renderMultisourceViewerPage(viewer));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Liefert die gespeicherte HTML-Kopie einer gecrawlten Seite aus, damit der
+  // Rahmen im Viewer sie ueber eine echte Adresse laden kann.
+  //
+  // Die CSP ist der eigentliche Schutz: Skripte sind verboten, Stylesheets,
+  // Bilder, Schriften und Medien duerfen von ueberall kommen - sonst waere die
+  // Kopie eine Textwueste. Das serverseitige Entfernen der Skripte beim
+  // Speichern bleibt als zweite Schicht, ebenso die Sandbox am Rahmen.
+  app.get("/view/:documentId/page", async (request, response, next) => {
+    try {
+      const documentId = Number(request.params.documentId);
+      if (!Number.isFinite(documentId) || documentId <= 0) {
+        response.status(400).json({ error: "invalid document id" });
+        return;
+      }
+
+      const scope = await resolveRagfindScope();
+      const document = await findDocument({
+        documentId,
+        allowedKnowledgeBaseIds: scope.knowledgeBaseIds
+      });
+      if (!document) {
+        response.status(404).json({ error: "document not found in configured RAGfind knowledge bases" });
+        return;
+      }
+
+      const file = await getDocumentFile(document.id);
+      const absolutePath = file?.relativePath ? path.join(env.ORIGINAL_STORAGE_DIR, file.relativePath) : null;
+      const storedPage = await readTextFileIfPresent(absolutePath);
+      if (!storedPage) {
+        response.status(404).json({ error: "no stored page available for this document" });
+        return;
+      }
+
+      response.setHeader(
+        "Content-Security-Policy",
+        [
+          "default-src 'none'",
+          "script-src 'none'",
+          "style-src * 'unsafe-inline'",
+          "img-src * data: blob:",
+          "font-src * data:",
+          "media-src *",
+          "form-action 'none'",
+          "frame-ancestors 'self'"
+        ].join("; ")
+      );
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      // Die Originalseite soll nicht erfahren, aus welchem Archiv der Abruf kommt.
+      response.setHeader("Referrer-Policy", "no-referrer");
+      response.type("text/html; charset=utf-8");
+      response.send(storedPage);
     } catch (error) {
       next(error);
     }

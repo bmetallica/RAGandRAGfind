@@ -49,11 +49,24 @@ function buildStorableHtml(html: string, finalUrl: string): string {
   });
 
   // Relative Pfade zu Stylesheets, Bildern und Links zeigen sonst ins Leere,
-  // weil die Kopie unter einer anderen Herkunft ausgeliefert wird.
-  const head = $("head").first();
+  // weil die Kopie unter einer anderen Herkunft ausgeliefert wird. Ohne <base>
+  // bleibt die Seite ungestylt - deshalb wird der Kopfbereich notfalls angelegt
+  // statt die Anweisung stillschweigend wegzulassen.
+  const baseTag = `<base href="${finalUrl.replace(/"/g, "&quot;")}">`;
+  let head = $("head").first();
+  if (head.length === 0) {
+    const html = $("html").first();
+    if (html.length > 0) {
+      html.prepend("<head></head>");
+    } else {
+      $.root().prepend("<head></head>");
+    }
+    head = $("head").first();
+  }
+
   if (head.length > 0) {
     head.find("base").remove();
-    head.prepend(`<base href="${finalUrl.replace(/"/g, "&quot;")}">`);
+    head.prepend(baseTag);
   }
 
   return $.html();

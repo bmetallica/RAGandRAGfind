@@ -272,6 +272,17 @@ Cooldown, greift automatisch das bisherige heuristische Reranking — die Suche 
 Ergebnisse, im Zweifel nur schlechter sortierte. `crossEncoderRerank` im Debug-Log und die
 `rerankMs`-Stufenzeit zeigen pro Anfrage, welcher Weg genommen wurde.
 
+Gecrawlte Seiten zeigt der Viewer als Seite: die gespeicherte HTML-Kopie wird über
+`/view/<id>/page` in einem Rahmen geladen, mit Stylesheets, Bildern und Schriften. Der Endpunkt
+setzt dafür eine eigene Content-Security-Policy, die Stile, Bilder, Schriften und Medien von überall
+erlaubt, Skripte aber verbietet; der Rahmen selbst ist zusätzlich sandboxed, und beim Speichern
+werden Skripte ohnehin entfernt. Ein `<base>`-Tag in der Kopie sorgt dafür, dass relative Pfade
+gegen die Originalseite auflösen. Titel und Quellzeile sind klickbare Links auf die echte Seite.
+
+Seiten, die vor der Einführung dieser Speicherung gecrawlt wurden, haben keine HTML-Kopie und
+erscheinen als Text. Ein erneuter Crawl derselben Adresse trägt die Kopie nachträglich nach, auch
+wenn der Text unverändert ist.
+
 ## Embedding-Input
 
 Embeddet wird nicht der rohe Chunk, sondern ein Kontext-Header aus Dokumenttitel und
