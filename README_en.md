@@ -184,6 +184,14 @@ of magnitude longer than the rest of the crawl. Images are worth it when they ar
 
 A deselected file type is not fetched as a page either, not merely left un-ingested.
 
+An image where OCR finds no text is not a failure: it is ingested with a short description built
+from its file name and origin (`ocrEmpty: true` in the metadata), stays findable by name, and shows
+as an image in the RAGfind viewer. Ingestion used to throw `no text extracted` there, and because
+the crawl did not isolate its addresses, that single exception tore down the whole run — on a deep
+crawl, most of the work. Every address now runs on its own: an unreachable page, a timeout, or a
+file with nothing readable in it is logged and counted, and the crawl carries on. That is why the
+result carries `failed` alongside `pages`, `files`, and `duplicates`.
+
 Via the API the switches are `downloadDocuments` and `downloadImages` on `POST /api/jobs/crawl`;
 when absent the same defaults apply. Scheduled crawls can carry them in the schedule payload.
 

@@ -196,6 +196,15 @@ gescannte Dokumente sind — sonst nicht.
 
 Ein abgewählter Dateityp wird auch nicht als Seite abgerufen, nicht nur nicht ingestiert.
 
+Ein Bild, in dem OCR keinen Text findet, ist kein Fehlerfall: es wird mit einer kurzen Beschreibung
+aus Dateiname und Herkunft aufgenommen (`ocrEmpty: true` in den Metadaten), ist über seinen Namen
+auffindbar und im RAGfind-Viewer als Bild zu sehen. Vorher warf die Ingestion dort
+`no text extracted`, und weil der Crawl seine Adressen nicht einzeln absicherte, riss diese eine
+Ausnahme den ganzen Lauf mit — bei einem Crawl in die Tiefe also den Großteil der Arbeit. Jede
+Adresse läuft jetzt für sich: eine nicht erreichbare Seite, eine Zeitüberschreitung oder eine Datei
+ohne lesbaren Inhalt wird protokolliert und gezählt, der Crawl macht weiter. Das Ergebnis enthält
+neben `pages`, `files` und `duplicates` deshalb auch `failed`.
+
 Über die API entsprechen die Schalter `downloadDocuments` und `downloadImages` in
 `POST /api/jobs/crawl`; fehlen sie, gelten dieselben Standardwerte. Für geplante Crawls können sie
 im Payload des Zeitplans stehen.

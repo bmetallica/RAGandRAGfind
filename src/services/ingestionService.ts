@@ -7,6 +7,7 @@ import { sha256 } from "../utils/hash";
 import { inferDocumentType, persistDocumentStructure } from "./documentService";
 import { getDocumentTypeSettingByKey } from "./documentTypeRegistryService";
 import { upsertDocumentFile } from "./originalFileService";
+import { isImage } from "../utils/files";
 import { logger } from "../utils/logger";
 import { searchIndexService } from "./searchIndexService";
 import { embedPendingQueue } from "../queues";
@@ -78,13 +79,35 @@ export class IngestionService {
       ? this.getUrlFileName(input.sourceRef)
       : path.basename(input.sourceRef);
 
+    // Ein Bild ohne Schrift ist kein Fehlerfall. OCR liefert dort nichts, und
+    // ingestText wirft bei leerem Text - im Crawl riss das den ganzen Lauf mit,
+    // sobald ein Foto ohne Text dabei war. Statt abzubrechen bekommt das Bild
+    // eine kurze Beschreibung aus Dateiname und Herkunft: es ist damit
+    // aufnehmbar, im Viewer als Bild zu sehen und ueber seinen Namen auffindbar.
+    const ocrFoundNothing = extracted.usedOcr && !extracted.text.trim();
+    const isImageFile = isImage(input.filePath) || isImage(input.sourceRef);
+    const fallbackText = ocrFoundNothing && isImageFile
+      ? this.buildImageFallbackText({
+          fileName: uploadedFileName || sourceRefName || path.basename(input.filePath),
+          sourceRef: input.sourceRef,
+          sourceUrl: input.sourceUrl
+        })
+      : null;
+
+    if (fallbackText) {
+      logger.info(
+        { sourceRef: input.sourceRef },
+        "ocr found no text in an image; ingesting it with a description instead of failing"
+      );
+    }
+
     return this.ingestText({
       sourceType: input.sourceType,
       sourceRef: input.sourceRef,
       knowledgeBaseId: input.knowledgeBaseId ?? null,
       sourceUrl: input.sourceUrl,
       title: extracted.title,
-      text: extracted.text,
+      text: fallbackText ?? extracted.text,
       mimeType: extracted.mimeType,
       fileType: extracted.fileType,
       originalFilePath: input.filePath,
@@ -93,9 +116,27 @@ export class IngestionService {
       metadata: {
         ...(input.metadata ?? {}),
         usedOcr: extracted.usedOcr,
+        ...(fallbackText ? { ocrEmpty: true } : {}),
         filePath: input.filePath
       }
     });
+  }
+
+  // Der Text muss das Bild beschreiben, nicht nur Platz fuellen: er ist alles,
+  // was Suche und Klassifizierung von diesem Dokument zu sehen bekommen.
+  private buildImageFallbackText(input: { fileName: string; sourceRef: string; sourceUrl?: string }): string {
+    const readableName = input.fileName
+      .replace(/\.[a-z0-9]+$/i, "")
+      .replace(/[_-]+/g, " ")
+      .trim();
+
+    return [
+      "Bild ohne erkennbaren Text.",
+      readableName ? `Bildname: ${readableName}` : null,
+      `Datei: ${input.fileName}`,
+      input.sourceUrl && input.sourceUrl !== input.sourceRef ? `Quelle: ${input.sourceUrl}` : null,
+      `Herkunft: ${input.sourceRef}`
+    ].filter(Boolean).join("\n");
   }
 
   async ingestText(input: IngestTextInput): Promise<{ documentId: number; duplicate: boolean; chunkCount: number }> {

@@ -7,6 +7,7 @@ import mime from "mime-types";
 import { env } from "../config/env";
 import { IngestionService } from "./ingestionService";
 import { isDownloadableDocument, isDownloadableImage } from "../utils/files";
+import { logger } from "../utils/logger";
 
 interface CrawlOptions {
   startUrl: string;
@@ -101,7 +102,7 @@ function resolveFinalResponseUrl(response: { request?: { res?: { responseUrl?: s
 export class CrawlService {
   constructor(private readonly ingestionService = new IngestionService()) {}
 
-  async crawl(options: CrawlOptions): Promise<{ pages: number; files: number; duplicates: number }> {
+  async crawl(options: CrawlOptions): Promise<{ pages: number; files: number; duplicates: number; failed: number }> {
     const startUrl = new URL(options.startUrl);
     const maxDepth = options.maxDepth ?? env.CRAWL_DEFAULT_MAX_DEPTH;
     const downloadDocuments = options.downloadDocuments !== false;
@@ -114,6 +115,7 @@ export class CrawlService {
     let pages = 0;
     let files = 0;
     let duplicates = 0;
+    let failed = 0;
 
     while (queue.length > 0) {
       const current = queue.shift();
@@ -122,66 +124,121 @@ export class CrawlService {
       }
 
       visited.add(current.url);
-      const response = await axios.get<ArrayBuffer>(current.url, {
-        responseType: "arraybuffer",
-        timeout: 30_000,
-        validateStatus: (status) => status >= 200 && status < 400
-      });
-      const finalUrl = resolveFinalResponseUrl(response, current.url);
-      const finalLocation = new URL(finalUrl);
-      allowedOrigins.add(finalLocation.origin);
-      visited.add(finalUrl);
 
-      const contentType = response.headers["content-type"] ?? mime.lookup(finalUrl) ?? "application/octet-stream";
-      if (!String(contentType).includes("text/html") && soll(finalUrl)) {
-        const result = await this.ingestRemoteFile(finalUrl, Buffer.from(response.data), options.knowledgeBaseId ?? null);
-        files += 1;
-        if (result.duplicate) {
-          duplicates += 1;
-        }
-        continue;
-      }
-
-      const html = Buffer.from(response.data).toString("utf8");
-      const $ = cheerio.load(html);
-      $("script, style, noscript").remove();
-      const title = $("title").first().text().trim() || finalUrl;
-      const bodyText = $("body").text().replace(/\s+/g, " ").trim();
-
-      if (bodyText) {
-        const result = await this.ingestPage({
-          finalUrl,
-          title,
-          bodyText,
-          html,
-          contentType: String(contentType),
-          knowledgeBaseId: options.knowledgeBaseId ?? null,
-          depth: current.depth,
-          requestedUrl: current.url
+      // Eine einzelne Adresse darf den Lauf nicht beenden. Vorher lief jede
+      // Ausnahme - nicht erreichbare Seite, Zeitueberschreitung, Datei ohne
+      // Text - bis in den Job hinauf und riss alles Verbleibende mit: bei einem
+      // Crawl in die Tiefe also den Grossteil der Arbeit.
+      try {
+        const result = await this.crawlOne({
+          current,
+          options,
+          allowedOrigins,
+          visited,
+          queue,
+          maxDepth,
+          soll
         });
-
-        pages += 1;
-        if (result.duplicate) {
-          duplicates += 1;
-        }
+        pages += result.pages;
+        files += result.files;
+        duplicates += result.duplicates;
+        failed += result.failed;
+      } catch (error) {
+        failed += 1;
+        logger.warn({ err: error, url: current.url }, "crawl skipped an address after an error");
       }
+    }
 
-      if (current.depth >= maxDepth) {
+    logger.info({ startUrl: options.startUrl, pages, files, duplicates, failed }, "crawl finished");
+    return { pages, files, duplicates, failed };
+  }
+
+  private async crawlOne(input: {
+    current: QueueEntry;
+    options: CrawlOptions;
+    allowedOrigins: Set<string>;
+    visited: Set<string>;
+    queue: QueueEntry[];
+    maxDepth: number;
+    soll: (url: string) => boolean;
+  }): Promise<{ pages: number; files: number; duplicates: number; failed: number }> {
+    const { current, options, allowedOrigins, visited, queue, maxDepth, soll } = input;
+    let pages = 0;
+    let files = 0;
+    let duplicates = 0;
+    let failed = 0;
+
+    const response = await axios.get<ArrayBuffer>(current.url, {
+      responseType: "arraybuffer",
+      timeout: 30_000,
+      validateStatus: (status) => status >= 200 && status < 400
+    });
+    const finalUrl = resolveFinalResponseUrl(response, current.url);
+    const finalLocation = new URL(finalUrl);
+    allowedOrigins.add(finalLocation.origin);
+    visited.add(finalUrl);
+
+    const contentType = response.headers["content-type"] ?? mime.lookup(finalUrl) ?? "application/octet-stream";
+    if (!String(contentType).includes("text/html") && soll(finalUrl)) {
+      const result = await this.ingestRemoteFile(finalUrl, Buffer.from(response.data), options.knowledgeBaseId ?? null);
+      files += 1;
+      if (result.duplicate) {
+        duplicates += 1;
+      }
+      return { pages, files, duplicates, failed };
+    }
+
+    const html = Buffer.from(response.data).toString("utf8");
+    const $ = cheerio.load(html);
+    $("script, style, noscript").remove();
+    const title = $("title").first().text().trim() || finalUrl;
+    const bodyText = $("body").text().replace(/\s+/g, " ").trim();
+
+    if (bodyText) {
+      const result = await this.ingestPage({
+        finalUrl,
+        title,
+        bodyText,
+        html,
+        contentType: String(contentType),
+        knowledgeBaseId: options.knowledgeBaseId ?? null,
+        depth: current.depth,
+        requestedUrl: current.url
+      });
+
+      pages += 1;
+      if (result.duplicate) {
+        duplicates += 1;
+      }
+    }
+
+    if (current.depth >= maxDepth) {
+      return { pages, files, duplicates, failed };
+    }
+
+    const links = $("a[href]")
+      .map((_, element) => $(element).attr("href"))
+      .get()
+      .filter(Boolean) as string[];
+
+    for (const href of links) {
+      let resolved: URL;
+      try {
+        resolved = new URL(href, finalUrl);
+      } catch {
+        // Unbrauchbare Adresse im Dokument - kein Grund, hier abzubrechen.
         continue;
       }
 
-      const links = $("a[href]")
-        .map((_, element) => $(element).attr("href"))
-        .get()
-        .filter(Boolean) as string[];
+      if (!allowedOrigins.has(resolved.origin)) {
+        continue;
+      }
 
-      for (const href of links) {
-        const resolved = new URL(href, finalUrl);
-        if (!allowedOrigins.has(resolved.origin)) {
-          continue;
-        }
-
-        if (soll(resolved.toString())) {
+      if (soll(resolved.toString())) {
+        // Jede verlinkte Datei einzeln absichern: ein totes Bild oder eine
+        // Datei, aus der sich nichts lesen laesst, darf die restliche Seite
+        // nicht verhindern.
+        try {
           const fileResponse = await axios.get<ArrayBuffer>(resolved.toString(), {
             responseType: "arraybuffer",
             timeout: 30_000,
@@ -192,22 +249,25 @@ export class CrawlService {
           if (result.duplicate) {
             duplicates += 1;
           }
-          continue;
+        } catch (error) {
+          failed += 1;
+          logger.warn({ err: error, url: resolved.toString() }, "crawl skipped a linked file after an error");
         }
+        continue;
+      }
 
-        // Ein abgewaehlter Dateityp darf auch nicht als Seite in die
-        // Warteschlange wandern - sonst wuerde er trotzdem abgerufen.
-        if (isDownloadableDocument(resolved.toString()) || isDownloadableImage(resolved.toString())) {
-          continue;
-        }
+      // Ein abgewaehlter Dateityp darf auch nicht als Seite in die
+      // Warteschlange wandern - sonst wuerde er trotzdem abgerufen.
+      if (isDownloadableDocument(resolved.toString()) || isDownloadableImage(resolved.toString())) {
+        continue;
+      }
 
-        if (!visited.has(resolved.toString())) {
-          queue.push({ url: resolved.toString(), depth: current.depth + 1 });
-        }
+      if (!visited.has(resolved.toString())) {
+        queue.push({ url: resolved.toString(), depth: current.depth + 1 });
       }
     }
 
-    return { pages, files, duplicates };
+    return { pages, files, duplicates, failed };
   }
 
   // Speichert neben dem extrahierten Text eine bereinigte HTML-Kopie als
