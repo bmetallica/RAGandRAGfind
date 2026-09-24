@@ -272,16 +272,70 @@ Cooldown, greift automatisch das bisherige heuristische Reranking — die Suche 
 Ergebnisse, im Zweifel nur schlechter sortierte. `crossEncoderRerank` im Debug-Log und die
 `rerankMs`-Stufenzeit zeigen pro Anfrage, welcher Weg genommen wurde.
 
-Gecrawlte Seiten zeigt der Viewer als Seite: die gespeicherte HTML-Kopie wird über
-`/view/<id>/page` in einem Rahmen geladen, mit Stylesheets, Bildern und Schriften. Der Endpunkt
-setzt dafür eine eigene Content-Security-Policy, die Stile, Bilder, Schriften und Medien von überall
-erlaubt, Skripte aber verbietet; der Rahmen selbst ist zusätzlich sandboxed, und beim Speichern
-werden Skripte ohnehin entfernt. Ein `<base>`-Tag in der Kopie sorgt dafür, dass relative Pfade
-gegen die Originalseite auflösen. Titel und Quellzeile sind klickbare Links auf die echte Seite.
+## Dokumentansicht in RAGfind
+
+Ein Suchtreffer öffnet das Dokument so, wie man es erwartet — nicht als Rohtext und nie als
+erzwungener Download. Welche Darstellung das ist, entscheidet `src/ragfind/viewerModel.ts` anhand
+von Dateityp, MIME-Typ und Herkunft:
+
+| Dokument | Ansicht |
+| --- | --- |
+| PDF | eingebetteter Betrachter auf Basis von pdf.js, mit Seitennavigation, Zoom und Volltextsuche im Dokument |
+| DOCX, ODT, PPTX, XLSX, RTF, CSV | von LibreOffice erzeugte PDF-Fassung, dann derselbe Betrachter |
+| gecrawlte Seite | die gespeicherte HTML-Kopie, mit Stylesheets, Bildern und Schriften |
+| Bild | das Bild selbst, der erkannte Text daneben |
+| Audio, Video | Abspieler |
+| Markdown | gerendert |
+| Quelltext | mit Syntaxhervorhebung |
+| sonstiges | extrahierter Text, notfalls eine Karte mit Dateiangaben und Download |
+
+Die Tabs richten sich nach dem, was es zu einem Dokument gibt: **Ansicht**, **Text** (die
+extrahierte Fassung mit hervorgehobenen Suchbegriffen und Sprung von Treffer zu Treffer),
+**Abschnitte** beziehungsweise **Inhalt** (bei PDFs mit eigener Gliederung deren Lesezeichen) und
+**Details**. Die Suchanfrage wird an die Ansicht weitergereicht: im PDF sucht der Betrachter sie
+selbst und springt zur ersten Fundstelle, im Text sind die Begriffe markiert. Ein Klick auf einen
+Textausschnitt in der Trefferliste springt an genau diese Stelle.
+
+pdf.js wird nicht ins Repository kopiert, sondern zur Laufzeit aus `node_modules/pdfjs-dist` unter
+`/pdfjs` ausgeliefert. PDF-Fassungen und Vorschaubilder liegen als abgeleitete Dateien neben dem
+Original unter `.derived/`; sie entstehen beim ersten Abruf und werden ungültig, sobald das
+Original neuer ist.
+
+### Gespeicherte Webseiten
+
+Die Kopie wird über `/view/<id>/page` in einem Rahmen geladen. Beim Ausliefern werden alle
+Verweise auf Stylesheets, Bilder, Schriften und Medien auf `/view/<id>/asset?u=…` umgebogen; dieser
+Endpunkt holt die Datei serverseitig und liefert sie unter der Herkunft von RAGfind aus.
+
+Der Umweg ist notwendig, nicht bequem: viele Seiten senden auf ihren eigenen Dateien
+`Cross-Origin-Resource-Policy: same-site`. Der Browser blockiert sie damit für jedes fremde
+Dokument, ganz gleich wie großzügig dessen Content-Security-Policy ist — die Kopie erschien vorher
+als nackter Text. Der Proxy fasst nur öffentliche Adressen an (private und lokale Bereiche werden
+nach Namensauflösung abgewiesen), lässt nur Stylesheets, Bilder, Schriften und Medien durch und
+schreibt in Stylesheets auch die dort enthaltenen Adressen um. Links auf andere Seiten werden
+absolut gemacht und zeigen weiterhin auf das Original.
+
+Skripte bleiben außen vor: sie werden beim Speichern entfernt, die Content-Security-Policy des
+Endpunkts verbietet sie, und der Rahmen ist zusätzlich sandboxed.
 
 Seiten, die vor der Einführung dieser Speicherung gecrawlt wurden, haben keine HTML-Kopie und
 erscheinen als Text. Ein erneuter Crawl derselben Adresse trägt die Kopie nachträglich nach, auch
 wenn der Text unverändert ist.
+
+## Trefferliste in RAGfind
+
+Die Liste zeigt je Dokument ein Vorschaubild (erste Seite bei PDF und Office, das Bild selbst bei
+Bildern), Dokumenttyp, Wissensdatenbank, Dateigröße und Datum, die Zusammenfassung aus der
+Klassifizierung und die Fundstellen im Text. Rechts stehen Filter für Dokumenttyp, Wissensdatenbank
+und Dateityp sowie die Sortierung nach Relevanz oder Datum; beides wirkt sofort und steht in der
+Adresse, ist also teilbar. Weitere Treffer kommen über einen Knopf dazu, statt die Liste auf zwölf
+Einträge zu beschneiden.
+
+Während der Suche steht ein Platzhalter statt einer leeren Seite — eine Anfrage kostet je nach
+Ollama-Antwortzeit mehrere Sekunden. Ergebnisse werden serverseitig fünf Minuten und im Browser für
+die Sitzung vorgehalten: Wer einen Treffer öffnet und zurückgeht, sieht die Liste sofort wieder.
+Ohne Treffer schlägt die Suche über Trigram-Ähnlichkeit ein anderes Wort vor. `/` springt ins
+Suchfeld, Pfeiltasten wählen einen Treffer, Enter öffnet ihn.
 
 ## Embedding-Input
 

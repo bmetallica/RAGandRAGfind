@@ -354,7 +354,10 @@ export async function getDocumentFilesByDocumentIds(documentIds: number[]): Prom
     [documentIds]
   );
 
-  return new Map(result.rows.map((row) => [row.document_id, rowToRecord(row)]));
+  // pg liefert bigint als String. Ohne Number() haette die Map Zeichenketten
+  // als Schluessel, waehrend die Aufrufer mit Zahlen nachschlagen - der Treffer
+  // ging dann immer daneben und die Originaldatei fehlte still in der Liste.
+  return new Map(result.rows.map((row) => [Number(row.document_id), rowToRecord(row)]));
 }
 
 export async function resolveDocumentLocalFilePath(documentId: number): Promise<string | null> {

@@ -1,0 +1,541 @@
+/* Die Dokumentansicht teilt sich Farben und Schrift mit der Suche und legt
+   darueber nur, was eine Leseflaeche zusaetzlich braucht. */
+
+.viewer-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.viewer-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1.5rem;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(18px);
+  border-bottom: 1px solid var(--border);
+}
+
+.viewer-topbar .logo--small {
+  font-size: 1.6rem;
+}
+
+.viewer-back {
+  color: var(--link);
+  text-decoration: none;
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+.viewer-back:hover {
+  text-decoration: underline;
+}
+
+.viewer-topbar__spacer {
+  flex: 1;
+}
+
+.viewer-header {
+  padding: 1.5rem 1.5rem 0;
+  max-width: 1280px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.viewer-title {
+  margin: 0 0 0.4rem;
+  font-size: clamp(1.4rem, 2.4vw, 2rem);
+  line-height: 1.2;
+}
+
+.viewer-source {
+  margin: 0 0 0.7rem;
+  color: #137a41;
+  font-size: 0.92rem;
+  word-break: break-word;
+}
+
+body[data-theme="dark"] .viewer-source {
+  color: #7ad9a1;
+}
+
+.viewer-source a {
+  color: inherit;
+}
+
+.viewer-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.7rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  border-radius: 999px;
+  padding: 0.3rem 0.7rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.badge--accent {
+  color: var(--link);
+  border-color: color-mix(in srgb, var(--link) 35%, transparent);
+}
+
+.viewer-summary {
+  margin: 0 0 0.7rem;
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1.6;
+  max-width: 80ch;
+}
+
+.viewer-notice {
+  margin: 0 0 0.9rem;
+  padding: 0.6rem 0.85rem;
+  border-radius: 0.7rem;
+  border: 1px solid color-mix(in srgb, #d99100 40%, var(--border));
+  background: color-mix(in srgb, #ffd166 16%, transparent);
+  color: var(--text);
+  font-size: 0.9rem;
+  max-width: 80ch;
+}
+
+.viewer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.9rem 0 0.7rem;
+}
+
+.viewer-tabs {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.viewer-tab,
+.viewer-action {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.viewer-tab[aria-selected="true"] {
+  background: color-mix(in srgb, var(--link) 14%, transparent);
+  border-color: color-mix(in srgb, var(--link) 40%, transparent);
+  color: var(--link);
+  font-weight: 600;
+}
+
+.viewer-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.viewer-body {
+  flex: 1;
+  max-width: 1280px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 1.5rem 2.5rem;
+}
+
+.viewer-pane {
+  display: none;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+
+.viewer-pane[data-active="true"] {
+  display: block;
+}
+
+/* Seitenansicht: PDF ------------------------------------------------------ */
+
+.pdf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.6rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+}
+
+.pdf-button {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-radius: 0.55rem;
+  min-width: 2rem;
+  padding: 0.35rem 0.6rem;
+  font: inherit;
+  cursor: pointer;
+  line-height: 1.1;
+}
+
+.pdf-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--link) 45%, transparent);
+}
+
+.pdf-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pdf-pageinfo,
+.pdf-findcount {
+  color: var(--muted);
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+
+.pdf-pageinput {
+  width: 3.2rem;
+  text-align: right;
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  background: var(--search-bg);
+  color: var(--text);
+  padding: 0.3rem 0.4rem;
+  font: inherit;
+}
+
+.pdf-find {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+}
+
+.pdf-find input {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--search-bg);
+  color: var(--text);
+  padding: 0.35rem 0.8rem;
+  font: inherit;
+  font-size: 0.9rem;
+  min-width: 12rem;
+}
+
+.pdf-shell {
+  position: relative;
+  height: min(80vh, 1100px);
+  background: color-mix(in srgb, #8a95a5 18%, transparent);
+}
+
+.pdf-container {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+}
+
+.pdf-status {
+  padding: 2.5rem 1.5rem;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* Seitenansicht: Webseite, Bild, Medien ----------------------------------- */
+
+.viewer-iframe {
+  width: 100%;
+  height: min(82vh, 1100px);
+  border: 0;
+  background: #fff;
+  display: block;
+}
+
+.image-shell {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 1.2rem;
+  background: color-mix(in srgb, #8a95a5 14%, transparent);
+  min-height: 40vh;
+}
+
+.image-shell img {
+  max-width: 100%;
+  max-height: 78vh;
+  border-radius: 0.5rem;
+  box-shadow: var(--shadow);
+}
+
+.media-shell {
+  padding: 2rem;
+  display: flex;
+  justify-content: center;
+}
+
+.media-shell video {
+  max-width: 100%;
+  max-height: 72vh;
+  border-radius: 0.6rem;
+}
+
+.download-card {
+  padding: 2.5rem 1.5rem;
+  text-align: center;
+  color: var(--muted);
+}
+
+.download-card strong {
+  display: block;
+  color: var(--text);
+  font-size: 1.1rem;
+  margin-bottom: 0.4rem;
+}
+
+.download-card .viewer-action {
+  margin-top: 1rem;
+}
+
+/* Textfassung, Markdown, Quelltext ---------------------------------------- */
+
+.viewer-findbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+}
+
+.viewer-findbar input {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--search-bg);
+  color: var(--text);
+  padding: 0.35rem 0.8rem;
+  font: inherit;
+  font-size: 0.9rem;
+  min-width: 14rem;
+}
+
+.viewer-content {
+  padding: 1.6rem 1.8rem;
+  overflow: auto;
+  max-height: min(82vh, 1100px);
+  line-height: 1.7;
+}
+
+.viewer-content.markdown {
+  max-width: 82ch;
+  margin: 0 auto;
+}
+
+.viewer-content h1,
+.viewer-content h2,
+.viewer-content h3 {
+  line-height: 1.25;
+}
+
+.viewer-content img {
+  max-width: 100%;
+}
+
+.viewer-content table {
+  border-collapse: collapse;
+  width: 100%;
+  overflow-x: auto;
+  display: block;
+}
+
+.viewer-content th,
+.viewer-content td {
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+}
+
+.viewer-text,
+.viewer-code,
+.viewer-content pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.93rem;
+  line-height: 1.65;
+}
+
+.viewer-code {
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.viewer-content mark {
+  background: var(--mark);
+  color: inherit;
+  border-radius: 0.2rem;
+  padding: 0 0.1rem;
+}
+
+.viewer-content mark[data-current="true"] {
+  background: #ff9f43;
+  color: #1a1207;
+}
+
+/* Abschnitte und Details --------------------------------------------------- */
+
+.section-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.6rem;
+  max-height: min(78vh, 1000px);
+  overflow: auto;
+}
+
+.section-list li {
+  border-bottom: 1px solid var(--border);
+}
+
+.section-list li:last-child {
+  border-bottom: 0;
+}
+
+.section-link {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  padding: 0.7rem 0.8rem;
+  cursor: pointer;
+  border-radius: 0.6rem;
+}
+
+.section-link:hover {
+  background: color-mix(in srgb, var(--link) 8%, transparent);
+}
+
+.section-link__title {
+  color: var(--link);
+  font-size: 1rem;
+}
+
+.section-link__preview {
+  display: block;
+  color: var(--muted);
+  font-size: 0.87rem;
+  margin-top: 0.2rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.info-grid {
+  margin: 0;
+  padding: 1.4rem 1.6rem;
+  display: grid;
+  grid-template-columns: minmax(8rem, 14rem) 1fr;
+  gap: 0.6rem 1.4rem;
+  font-size: 0.95rem;
+}
+
+.info-grid dt {
+  color: var(--muted);
+}
+
+.info-grid dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+@media (max-width: 760px) {
+  .viewer-header,
+  .viewer-body {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .info-grid {
+    grid-template-columns: 1fr;
+    gap: 0.2rem 0;
+  }
+
+  .info-grid dd {
+    margin-bottom: 0.6rem;
+  }
+
+  .pdf-find input {
+    min-width: 8rem;
+  }
+}
+
+/* Quelltextfarben ---------------------------------------------------------- */
+
+.hljs-comment,
+.hljs-quote { color: #64748b; font-style: italic; }
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-type { color: #0f766e; }
+.hljs-string,
+.hljs-doctag,
+.hljs-regexp,
+.hljs-attr { color: #9a3412; }
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class { color: #1d4ed8; }
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-meta { color: #7c3aed; }
+.hljs-built_in,
+.hljs-variable,
+.hljs-template-variable { color: #b45309; }
+
+body[data-theme="dark"] .hljs-comment,
+body[data-theme="dark"] .hljs-quote { color: #94a3b8; }
+body[data-theme="dark"] .hljs-keyword,
+body[data-theme="dark"] .hljs-selector-tag,
+body[data-theme="dark"] .hljs-literal,
+body[data-theme="dark"] .hljs-type { color: #7dd3fc; }
+body[data-theme="dark"] .hljs-string,
+body[data-theme="dark"] .hljs-doctag,
+body[data-theme="dark"] .hljs-regexp,
+body[data-theme="dark"] .hljs-attr { color: #fdba74; }
+body[data-theme="dark"] .hljs-title,
+body[data-theme="dark"] .hljs-section,
+body[data-theme="dark"] .hljs-name,
+body[data-theme="dark"] .hljs-selector-id,
+body[data-theme="dark"] .hljs-selector-class { color: #c4b5fd; }
+body[data-theme="dark"] .hljs-number,
+body[data-theme="dark"] .hljs-symbol,
+body[data-theme="dark"] .hljs-bullet,
+body[data-theme="dark"] .hljs-meta { color: #f9a8d4; }
+body[data-theme="dark"] .hljs-built_in,
+body[data-theme="dark"] .hljs-variable,
+body[data-theme="dark"] .hljs-template-variable { color: #fcd34d; }

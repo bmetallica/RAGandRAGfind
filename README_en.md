@@ -259,15 +259,66 @@ the previous heuristic reranking takes over automatically — search always retu
 ordered less well. `crossEncoderRerank` in the debug log and the `rerankMs` stage timing show which
 path each request took.
 
-Crawled pages are shown as pages: the stored HTML copy is loaded into a frame via
-`/view/<id>/page`, with stylesheets, images, and fonts. That endpoint sets its own Content-Security-
-Policy allowing styles, images, fonts, and media from anywhere while forbidding scripts; the frame
-itself is additionally sandboxed, and scripts are stripped at save time anyway. A `<base>` tag in the
-copy makes relative paths resolve against the original site. The title and source line are clickable
-links to the live page.
+## Document view in RAGfind
+
+A search hit opens the document the way you expect it — not as raw text, and never as a forced
+download. Which presentation that is gets decided in `src/ragfind/viewerModel.ts` from file type,
+MIME type, and origin:
+
+| Document | View |
+| --- | --- |
+| PDF | embedded pdf.js viewer with page navigation, zoom, and in-document search |
+| DOCX, ODT, PPTX, XLSX, RTF, CSV | PDF rendition produced by LibreOffice, then the same viewer |
+| crawled page | the stored HTML copy, with stylesheets, images, and fonts |
+| image | the image itself, the recognized text next to it |
+| audio, video | player |
+| Markdown | rendered |
+| source code | syntax highlighted |
+| anything else | extracted text, or a card with file details and a download |
+
+Tabs follow what a document actually has: **view**, **text** (the extracted version with the query
+terms highlighted and jump-to-next-match), **sections** or **contents** (a PDF's own bookmarks when
+it has them), and **details**. The query is carried into the view: in a PDF the viewer searches for
+it and jumps to the first match; in the text the terms are marked. Clicking a snippet in the result
+list jumps to exactly that passage.
+
+pdf.js is not copied into the repository; it is served at `/pdfjs` from `node_modules/pdfjs-dist` at
+runtime. PDF renditions and thumbnails live as derived files next to the original under `.derived/`;
+they are produced on first request and go stale as soon as the original is newer.
+
+### Stored web pages
+
+The copy is loaded into a frame via `/view/<id>/page`. While serving it, every reference to
+stylesheets, images, fonts, and media is rewritten to `/view/<id>/asset?u=…`; that endpoint fetches
+the file server-side and serves it from RAGfind's own origin.
+
+This detour is necessary, not convenient: many sites send
+`Cross-Origin-Resource-Policy: same-site` on their own files. The browser then blocks them for any
+foreign document, no matter how permissive that document's Content-Security-Policy is — the copy
+used to appear as bare text. The proxy touches public addresses only (private and local ranges are
+refused after name resolution), passes through stylesheets, images, fonts, and media only, and also
+rewrites the addresses contained inside stylesheets. Links to other pages are made absolute and
+still point at the original site.
+
+Scripts stay out: they are stripped at save time, the endpoint's Content-Security-Policy forbids
+them, and the frame is sandboxed on top of that.
 
 Pages crawled before this storage existed have no HTML copy and appear as text. Re-crawling the same
 address attaches the copy afterwards, even when the text is unchanged.
+
+## Result list in RAGfind
+
+Each result shows a thumbnail (first page for PDF and Office files, the image itself for images),
+document type, knowledge base, file size and date, the summary from classification, and the matching
+passages. Filters for document type, knowledge base, and file type sit on the right, along with
+sorting by relevance or date; both apply instantly and live in the URL, so a filtered list can be
+shared. More results are added by a button instead of cutting the list off at twelve.
+
+While a search runs, a placeholder stands in for an empty page — a query costs several seconds
+depending on Ollama's response time. Results are kept server-side for five minutes and in the
+browser for the session: opening a hit and going back shows the list immediately. With no hits,
+search suggests a different word via trigram similarity. `/` focuses the search field, arrow keys
+select a result, Enter opens it.
 
 ## Embedding input
 

@@ -40,6 +40,7 @@
     "multer": "^1.4.5-lts.1",
     "node-cron": "^3.0.3",
     "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^4.10.38",
     "pg": "^8.13.1",
     "pino": "^9.5.0",
     "pino-http": "^10.3.0",
