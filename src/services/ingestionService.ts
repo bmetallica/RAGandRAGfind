@@ -116,12 +116,18 @@ export class IngestionService {
 
     const contentHash = sha256(normalizedText);
 
+    // Die Suche darf NICHT auf die Wissensdatenbank eingeschraenkt werden:
+    // documents.content_hash ist global eindeutig. Mit der Einschraenkung fand
+    // ein Lauf, der dasselbe Dokument ohne oder mit anderer Wissensdatenbank
+    // aufnahm, den Bestand nicht - und lief in eine Verletzung der Eindeutigkeit
+    // statt in den Duplikatpfad. Der ganze Crawl brach dann ab, und der
+    // Nachtrag der fehlenden Originaldatei kam nie zustande.
     const preflightExisting = await pool.query<{ id: number }>(
       `
         SELECT id
         FROM documents
         WHERE content_hash = $1
-          AND COALESCE(knowledge_base_id, 0) = COALESCE($2::bigint, 0)
+        ORDER BY (COALESCE(knowledge_base_id, 0) = COALESCE($2::bigint, 0)) DESC, id ASC
         LIMIT 1
       `,
       [contentHash, input.knowledgeBaseId ?? null]
@@ -204,7 +210,7 @@ export class IngestionService {
           SELECT id
           FROM documents
           WHERE content_hash = $1
-            AND COALESCE(knowledge_base_id, 0) = COALESCE($2::bigint, 0)
+          ORDER BY (COALESCE(knowledge_base_id, 0) = COALESCE($2::bigint, 0)) DESC, id ASC
           LIMIT 1
         `,
         [contentHash, input.knowledgeBaseId ?? null]
@@ -331,6 +337,32 @@ export class IngestionService {
       return { documentId, duplicate: false, chunkCount: chunks.length };
     } catch (error) {
       await client.query("ROLLBACK");
+
+      // Zwei Laeufe koennen dasselbe Dokument gleichzeitig sehen; der zweite
+      // laeuft dann trotz aller Vorabpruefungen in die Eindeutigkeit von
+      // content_hash. Das ist ein Duplikat, kein Fehlschlag - ohne diesen Zweig
+      // bricht ein ganzer Crawl an einer bereits bekannten Seite ab.
+      if ((error as { code?: string }).code === "23505") {
+        const existingByHash = await pool.query<{ id: number }>(
+          "SELECT id FROM documents WHERE content_hash = $1 LIMIT 1",
+          [contentHash]
+        );
+        if (existingByHash.rowCount) {
+          duplicateDocumentId = existingByHash.rows[0].id;
+          await this.attachMissingOriginalFile(duplicateDocumentId, {
+            originalFilePath: input.originalFilePath,
+            originalFileName: sanitizedOriginalFileName,
+            originalExternalUrl: sanitizedOriginalExternalUrl ?? sanitizedSourceUrl,
+            sourceType: sanitizedSourceType,
+            sourceRef: sanitizedSourceRef,
+            mimeType: sanitizedMimeType,
+            title: sanitizedTitle
+          });
+          logger.info({ documentId: duplicateDocumentId, sourceRef: sanitizedSourceRef }, "ingestion hit an existing content hash and was treated as duplicate");
+          return { documentId: duplicateDocumentId, duplicate: true, chunkCount: 0 };
+        }
+      }
+
       throw error;
     } finally {
       client.release();

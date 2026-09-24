@@ -2030,7 +2030,9 @@ export async function executeDocumentInventoryQuery(query: string, topK: number,
 
     return {
       chunkId: -(index + 1),
-      documentId: row.document_id,
+      // pg gibt bigint als String zurueck; ohne Number() vergleicht sich die
+      // Dokument-Id spaeter nicht mit den numerischen Schluesseln der Aufrufer.
+      documentId: Number(row.document_id),
       title: displayTitle,
       sourceType: row.source_type,
       sourceRef: row.source_ref,
@@ -2237,7 +2239,7 @@ export async function executeDocumentContextQuery(options: {
 
   const items: QueryItem[] = result.rows.map((row, index) => ({
     chunkId: row.chunk_id,
-    documentId: row.document_id,
+    documentId: Number(row.document_id),
     title: row.title,
     sourceType: row.source_type,
     sourceRef: row.source_ref,
@@ -3544,7 +3546,7 @@ export function createApiRouter(schedulerService: SchedulerService) {
         `,
         [sourceType, rawQuery, `%${rawQuery}%`, sqlLimit, allowedKnowledgeBaseIds ?? null]
       );
-      const files = await getDocumentFilesByDocumentIds(result.rows.map((row) => row.id));
+      const files = await getDocumentFilesByDocumentIds(result.rows.map((row) => Number(row.id)));
       const payload = result.rows.map((row) => {
         const documentType = inferDocumentType({
           title: row.title,
@@ -3556,7 +3558,7 @@ export function createApiRouter(schedulerService: SchedulerService) {
         return {
           ...row,
           document_type: documentType,
-          original_file: files.get(row.id) ?? null
+          original_file: files.get(Number(row.id)) ?? null
         };
       });
 
@@ -3564,7 +3566,7 @@ export function createApiRouter(schedulerService: SchedulerService) {
         payload
           .filter((row) => !category || matchesCategory({
             chunkId: 0,
-            documentId: row.id,
+            documentId: Number(row.id),
             title: row.title,
             sourceType: row.source_type,
             sourceRef: row.source_ref,

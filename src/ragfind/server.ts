@@ -2,7 +2,6 @@ import express from "express";
 import pinoHttp from "pino-http";
 import path from "node:path";
 import { access, readFile } from "node:fs/promises";
-import hljs from "highlight.js";
 import { env } from "../config/env";
 import { logger } from "../utils/logger";
 import { pool } from "../db/pool";
@@ -11,11 +10,16 @@ import { executeSmartSearchQuery } from "../routes/api";
 import { findDocument } from "../services/documentService";
 import { getDocumentFile, getDocumentFilesByDocumentIds } from "../services/originalFileService";
 import { resolveRagfindKnowledgeBaseScope } from "../services/ragfindSettingsService";
+import { ensurePdfRendition, ensurePdfThumbnail, isOfficeConvertible, isPdfFile } from "./derivedAssets";
+import { fetchRemoteAsset, rewriteCssUrls, rewriteStoredPage } from "./assetProxy";
+import { absoluteFilePath, buildViewerPayload, isWebPageDocument, previewKindFor, type PresentationKind } from "./viewerModel";
+import { renderExtractedTextPage, renderViewerShell } from "./viewerPage";
 
 interface SearchSnippet {
   chunkId: number;
   score: number;
   snippet: string;
+  text: string;
   pageStart: number | null;
   pageEnd: number | null;
   sectionIndex: number | null;
@@ -30,12 +34,24 @@ interface SearchResultGroup {
   sourceUrl: string | null;
   mimeType: string | null;
   fileType: string | null;
-  isHtml: boolean;
+  documentType: string | null;
+  summary: string | null;
+  knowledgeBaseName: string | null;
+  updatedAt: string | null;
+  fileSizeBytes: number | null;
+  previewKind: PresentationKind;
+  thumbUrl: string | null;
   viewUrl: string;
   originalUrl: string | null;
+  downloadUrl: string | null;
   originalName: string | null;
   score: number;
   snippets: SearchSnippet[];
+}
+
+interface FacetEntry {
+  value: string;
+  count: number;
 }
 
 interface SupplementalSearchRow {
@@ -50,82 +66,61 @@ interface SupplementalSearchRow {
   match_score: number;
 }
 
-type ViewerKind = "html" | "markdown" | "code" | "text";
-
-const VIEWER_CODE_FILE_TYPES = new Set([
-  "js", "jsx", "ts", "tsx", "py", "java", "go", "rs", "rb", "php", "c", "cc", "cpp", "h", "hpp",
-  "cs", "sh", "bash", "zsh", "json", "yml", "yaml", "toml", "ini", "cfg", "conf", "xml", "sql", "css", "scss", "less"
-]);
-
-const VIEWER_BINARY_FILE_TYPES = new Set([
-  "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "odt", "ods", "odp", "rtf",
-  "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tif", "tiff", "ico",
-  "mp3", "wav", "ogg", "m4a", "flac", "mp4", "mkv", "mov", "avi", "webm",
-  "zip", "rar", "7z", "gz", "tar", "bz2"
-]);
-
-const VIEWER_BINARY_MIME_PREFIXES = [
-  "image/",
-  "audio/",
-  "video/",
-  "application/pdf"
-];
-
-const VIEWER_BINARY_MIME_TYPES = new Set([
-  "application/msword",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.ms-excel",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  "application/vnd.ms-powerpoint",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  "application/vnd.oasis.opendocument.text",
-  "application/vnd.oasis.opendocument.spreadsheet",
-  "application/vnd.oasis.opendocument.presentation",
-  "application/rtf",
-  "application/zip",
-  "application/x-zip-compressed",
-  "application/x-rar-compressed",
-  "application/x-7z-compressed",
-  "application/gzip",
-  "application/x-tar"
-]);
-
-interface ViewerContent {
-  title: string;
-  sourceRef: string;
-  sourceType: string;
-  fileType: string | null;
-  mimeType: string | null;
-  kind: ViewerKind;
-  rawText: string;
-  renderedHtml: string;
-  // Gesetzt, wenn eine gespeicherte HTML-Kopie existiert: der Rahmen laedt sie
-  // dann ueber diese URL statt ueber srcdoc.
-  pageUrl: string | null;
-  sourceUrl: string | null;
-  originalUrl: string | null;
-  originalName: string | null;
+interface DocumentSummaryRow {
+  id: number;
+  title: string | null;
+  source_type: string;
+  source_ref: string;
+  source_url: string | null;
+  file_type: string | null;
+  mime_type: string | null;
+  updated_at: string | null;
+  document_type: string | null;
+  summary: string | null;
+  knowledge_base_name: string | null;
 }
 
 const RAGFIND_STATIC_ROOT = path.resolve(process.cwd(), "public", "ragfind");
+const PDFJS_ROOT = path.dirname(require.resolve("pdfjs-dist/package.json"));
 const RAGFIND_SCOPE_CACHE_TTL_MS = 60_000;
+const SEARCH_CACHE_TTL_MS = 5 * 60_000;
+const SEARCH_CACHE_MAX_ENTRIES = 60;
+const SEARCH_RESULT_LIMIT = 40;
 
 let ragfindScopeCache: { value: { knowledgeBaseIds: number[]; knowledgeBases: KnowledgeBaseRecord[] } | null; expiresAt: number } = {
   value: null,
   expiresAt: 0
 };
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// Eine Suche kostet mehrere Sekunden, fast alles davon das Embedding der
+// Anfrage. Wer einen Treffer oeffnet und zurueckgeht, soll nicht erneut warten.
+const searchCache = new Map<string, { expiresAt: number; payload: unknown }>();
+
+function readSearchCache(key: string): unknown | null {
+  const entry = searchCache.get(key);
+  if (!entry) {
+    return null;
+  }
+
+  if (entry.expiresAt <= Date.now()) {
+    searchCache.delete(key);
+    return null;
+  }
+
+  return entry.payload;
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+function writeSearchCache(key: string, payload: unknown): void {
+  if (searchCache.size >= SEARCH_CACHE_MAX_ENTRIES) {
+    const oldestKey = searchCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      searchCache.delete(oldestKey);
+    }
+  }
+  searchCache.set(key, { expiresAt: Date.now() + SEARCH_CACHE_TTL_MS, payload });
+}
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeSnippet(text: string, query: string): string {
@@ -163,8 +158,21 @@ function normalizeSnippet(text: string, query: string): string {
   return `${prefix}${flattened.slice(start, end).trim()}${suffix}`;
 }
 
+function escapeSnippetHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function highlightSnippet(text: string, query: string): string {
-  const normalized = normalizeSnippet(text, query);
+  // Der Ausschnitt stammt aus dem Dokument und landet in der Trefferliste als
+  // HTML - Markup daraus muss entschaerft sein, bevor die Suchbegriffe
+  // ausgezeichnet werden. Sonst brauechte nur eine gecrawlte Seite ein
+  // script-Tag im Text zu haben.
+  const normalized = escapeSnippetHtml(normalizeSnippet(text, query));
   if (!normalized || !query.trim()) {
     return normalized;
   }
@@ -310,12 +318,116 @@ async function resolveRagfindScope(): Promise<{ knowledgeBaseIds: number[]; know
   return scope;
 }
 
-async function buildSearchResults(query: string, topK: number): Promise<{ knowledgeBases: KnowledgeBaseRecord[]; results: SearchResultGroup[] }> {
+
+function stripHighlightMarkup(value: string): string {
+  return value.replace(/<\/?mark>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+}
+
+function buildViewUrl(documentId: number, query: string): string {
+  const params = new URLSearchParams();
+  if (query.trim()) {
+    params.set("q", query.trim());
+  }
+  const suffix = params.toString();
+  return suffix ? `/view/${documentId}?${suffix}` : `/view/${documentId}`;
+}
+
+async function loadDocumentSummaries(documentIds: number[]): Promise<Map<number, DocumentSummaryRow>> {
+  if (documentIds.length === 0) {
+    return new Map();
+  }
+
+  const result = await pool.query<DocumentSummaryRow>(
+    `
+      SELECT
+        d.id,
+        d.title,
+        d.source_type,
+        d.source_ref,
+        d.source_url,
+        d.file_type,
+        d.mime_type,
+        d.updated_at::text AS updated_at,
+        d.metadata->>'documentType' AS document_type,
+        d.metadata->'classification'->>'summary' AS summary,
+        kb.name AS knowledge_base_name
+      FROM documents d
+      LEFT JOIN knowledge_bases kb ON kb.id = d.knowledge_base_id
+      WHERE d.id = ANY($1::bigint[])
+    `,
+    [documentIds]
+  );
+
+  return new Map(result.rows.map((row) => [Number(row.id), row]));
+}
+
+function countFacet(values: (string | null)[]): FacetEntry[] {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    const normalized = (value ?? "").trim();
+    if (!normalized) {
+      continue;
+    }
+    counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .map(([value, count]) => ({ value, count }))
+    .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value));
+}
+
+// Nur bei null Treffern: das aehnlichste Wort aus Titeln und Dateinamen. Der
+// Bestand ist klein genug, dass sich dafuer kein eigenes Woerterbuch lohnt.
+async function findSpellingSuggestion(query: string, allowedKnowledgeBaseIds: number[]): Promise<string | null> {
+  const terms = normalizeSearchTerms(query).filter((term) => term.length >= 4);
+  if (terms.length === 0) {
+    return null;
+  }
+
+  try {
+    const result = await pool.query<{ suggestion: string }>(
+      `
+        WITH vocabulary AS (
+          SELECT DISTINCT lower(word) AS word
+          FROM documents d
+          CROSS JOIN LATERAL regexp_split_to_table(
+            COALESCE(d.title, '') || ' ' || d.source_ref,
+            '[^[:alnum:]]+'
+          ) AS word
+          WHERE (
+              $2::bigint[] IS NULL
+              OR (cardinality($2::bigint[]) > 0 AND d.knowledge_base_id = ANY($2::bigint[]))
+            )
+            AND char_length(word) >= 4
+        )
+        SELECT word AS suggestion
+        FROM vocabulary, unnest($1::text[]) AS term
+        WHERE similarity(word, term) > 0.42
+        ORDER BY similarity(word, term) DESC
+        LIMIT 1
+      `,
+      [terms, allowedKnowledgeBaseIds]
+    );
+
+    const suggestion = result.rows[0]?.suggestion ?? null;
+    return suggestion && !terms.includes(suggestion) ? suggestion : null;
+  } catch (error) {
+    logger.debug({ err: error }, "spelling suggestion failed");
+    return null;
+  }
+}
+
+async function buildSearchResults(query: string, limit: number): Promise<{
+  knowledgeBases: KnowledgeBaseRecord[];
+  results: SearchResultGroup[];
+  facets: Record<string, FacetEntry[]>;
+  suggestion: string | null;
+}> {
   const startedAt = Date.now();
   const timings: Record<string, number> = {};
   const scope = await resolveRagfindScope();
   timings.scopeResolutionMs = Date.now() - startedAt;
-  const retrievalTopK = Math.min(Math.max(topK * 3, 18), 48);
+  const retrievalTopK = Math.min(Math.max(limit * 3, 24), 90);
   const retrievalStartedAt = Date.now();
   const payload = await executeSmartSearchQuery({
     query,
@@ -329,135 +441,133 @@ async function buildSearchResults(query: string, topK: number): Promise<{ knowle
   });
   timings.smartSearchMs = Date.now() - retrievalStartedAt;
 
-  const fileLookupStartedAt = Date.now();
-  const fileMap = await getDocumentFilesByDocumentIds([...new Set(payload.items.map((item) => item.documentId))]);
-  timings.fileLookupMs = Date.now() - fileLookupStartedAt;
-  const grouped = new Map<number, SearchResultGroup>();
-
+  const grouped = new Map<number, { score: number; snippets: SearchSnippet[] }>();
   for (const item of payload.items) {
-    const existing = grouped.get(item.documentId);
-    const file = fileMap.get(item.documentId) ?? null;
+    const highlighted = highlightSnippet(item.content, query);
     const snippet: SearchSnippet = {
       chunkId: item.chunkId,
       score: item.score,
-      snippet: highlightSnippet(item.content, query),
+      snippet: highlighted,
+      text: stripHighlightMarkup(highlighted),
       pageStart: typeof item.metadata.pageStart === "number" ? item.metadata.pageStart : null,
       pageEnd: typeof item.metadata.pageEnd === "number" ? item.metadata.pageEnd : null,
       sectionIndex: typeof item.metadata.sectionIndex === "number" ? item.metadata.sectionIndex : null,
-      sectionTitle: typeof item.metadata.sectionTitle === "string" ? item.metadata.sectionTitle : null,
+      sectionTitle: typeof item.metadata.sectionTitle === "string" ? item.metadata.sectionTitle : null
     };
 
+    const existing = grouped.get(item.documentId);
     if (existing) {
       existing.score = Math.max(existing.score, item.score);
       existing.snippets.push(snippet);
       continue;
     }
 
-    grouped.set(item.documentId, {
-      documentId: item.documentId,
-      title: item.title ?? item.sourceRef,
-      sourceRef: item.sourceRef,
-      sourceType: item.sourceType,
-      sourceUrl: item.sourceUrl ?? null,
-      mimeType: typeof item.metadata.mimeType === "string"
-        ? item.metadata.mimeType
-        : typeof item.metadata.mime_type === "string"
-          ? item.metadata.mime_type
-          : null,
-      fileType: typeof item.metadata.fileType === "string"
-        ? item.metadata.fileType
-        : typeof item.metadata.file_type === "string"
-          ? item.metadata.file_type
-          : null,
-      isHtml: item.sourceType.startsWith("crawl")
-        || typeof item.metadata.mimeType === "string" && item.metadata.mimeType.includes("html")
-        || typeof item.metadata.mime_type === "string" && item.metadata.mime_type.includes("html")
-        || typeof item.metadata.fileType === "string" && item.metadata.fileType.toLowerCase() === "html"
-        || typeof item.metadata.file_type === "string" && item.metadata.file_type.toLowerCase() === "html",
-      viewUrl: `/view/${item.documentId}`,
-      originalUrl: file ? `/api/documents/${item.documentId}/original` : null,
-      originalName: file?.originalName ?? null,
-      score: item.score,
-      snippets: [snippet]
-    });
+    grouped.set(item.documentId, { score: item.score, snippets: [snippet] });
   }
 
-  if (grouped.size < topK) {
+  // Die Vektorsuche findet nur, was schon eingebettet ist. Der Zusatzlauf holt
+  // Dokumente dazu, die nur ueber Titel oder Dateiname passen.
+  if (grouped.size < limit) {
     const supplementalStartedAt = Date.now();
-    const supplementalDocuments = await findSupplementalDocuments(query, topK * 4, scope.knowledgeBaseIds);
-    const supplementalIds = supplementalDocuments
-      .map((entry) => Number(entry.document_id))
-      .filter((documentId) => !grouped.has(documentId));
-    const supplementalFileMap = supplementalIds.length > 0
-      ? await getDocumentFilesByDocumentIds(supplementalIds)
-      : new Map<number, Awaited<ReturnType<typeof getDocumentFilesByDocumentIds>> extends Map<number, infer TValue> ? TValue : never>();
-
+    const supplementalDocuments = await findSupplementalDocuments(query, limit * 2, scope.knowledgeBaseIds);
     for (const document of supplementalDocuments) {
       const documentId = Number(document.document_id);
       if (grouped.has(documentId)) {
         continue;
       }
 
-      const file = supplementalFileMap.get(documentId) ?? null;
+      const highlighted = highlightSnippet(document.extracted_text || document.source_ref, query);
       grouped.set(documentId, {
-        documentId,
-        title: document.title ?? document.source_ref,
-        sourceRef: document.source_ref,
-        sourceType: document.source_type,
-        sourceUrl: document.source_url ?? null,
-        mimeType: document.mime_type ?? null,
-        fileType: document.file_type ?? null,
-        isHtml: document.source_type.startsWith("crawl")
-          || (document.mime_type ?? "").includes("html")
-          || ["html", "htm", "xhtml"].includes((document.file_type ?? "").toLowerCase()),
-        viewUrl: `/view/${documentId}`,
-        originalUrl: file ? `/api/documents/${documentId}/original` : null,
-        originalName: file?.originalName ?? null,
         score: Number(document.match_score),
-        snippets: [
-          {
-            chunkId: 0,
-            score: Number(document.match_score),
-            snippet: highlightSnippet(document.extracted_text || document.source_ref, query),
-            pageStart: null,
-            pageEnd: null,
-            sectionIndex: null,
-            sectionTitle: null
-          }
-        ]
+        snippets: [{
+          chunkId: 0,
+          score: Number(document.match_score),
+          snippet: highlighted,
+          text: stripHighlightMarkup(highlighted),
+          pageStart: null,
+          pageEnd: null,
+          sectionIndex: null,
+          sectionTitle: null
+        }]
       });
 
-      if (grouped.size >= topK) {
+      if (grouped.size >= limit) {
         break;
       }
     }
     timings.supplementalMs = Date.now() - supplementalStartedAt;
   }
 
+  const documentIds = [...grouped.keys()];
+  const lookupStartedAt = Date.now();
+  const [fileMap, summaryMap] = await Promise.all([
+    getDocumentFilesByDocumentIds(documentIds),
+    loadDocumentSummaries(documentIds)
+  ]);
+  timings.documentLookupMs = Date.now() - lookupStartedAt;
+
+  const results: SearchResultGroup[] = [];
+  for (const [documentId, entry] of grouped) {
+    const summary = summaryMap.get(documentId);
+    const file = fileMap.get(documentId) ?? null;
+    const fileType = summary?.file_type ?? null;
+    const mimeType = summary?.mime_type ?? null;
+    const sourceType = summary?.source_type ?? "unbekannt";
+    const previewKind = previewKindFor({ sourceType, fileType, mimeType });
+    const hasLocalFile = Boolean(file?.relativePath);
+
+    results.push({
+      documentId,
+      title: summary?.title ?? summary?.source_ref ?? `Dokument ${documentId}`,
+      sourceRef: summary?.source_ref ?? "",
+      sourceType,
+      sourceUrl: summary?.source_url ?? null,
+      mimeType,
+      fileType,
+      documentType: summary?.document_type ?? null,
+      summary: summary?.summary ?? null,
+      knowledgeBaseName: summary?.knowledge_base_name ?? null,
+      updatedAt: summary?.updated_at ?? null,
+      fileSizeBytes: file?.fileSizeBytes ?? null,
+      previewKind,
+      // Vorschaubilder gibt es nur, wo sich wirklich eins erzeugen laesst -
+      // sonst fragt die Trefferliste lauter 404 ab.
+      thumbUrl: hasLocalFile && (previewKind === "pdf" || previewKind === "image")
+        ? `/view/${documentId}/thumb`
+        : null,
+      viewUrl: buildViewUrl(documentId, query),
+      originalUrl: file ? `/api/documents/${documentId}/original` : null,
+      downloadUrl: file ? `/api/documents/${documentId}/original?download=1` : null,
+      originalName: file?.originalName ?? null,
+      score: entry.score,
+      snippets: entry.snippets.sort((left, right) => right.score - left.score).slice(0, 4)
+    });
+  }
+
+  results.sort((left, right) => right.score - left.score);
+  const limited = results.slice(0, limit);
+
+  const facets = {
+    documentTypes: countFacet(limited.map((entry) => entry.documentType)),
+    knowledgeBases: countFacet(limited.map((entry) => entry.knowledgeBaseName)),
+    fileTypes: countFacet(limited.map((entry) => entry.fileType)),
+    sourceTypes: countFacet(limited.map((entry) => entry.sourceType))
+  };
+
+  const suggestion = limited.length === 0
+    ? await findSpellingSuggestion(query, scope.knowledgeBaseIds)
+    : null;
+
   logger.debug({
     query,
-    topK,
+    limit,
     retrievalTopK,
     payloadItemCount: payload.items.length,
     groupedDocumentCount: grouped.size,
-    timings: {
-      ...timings,
-      totalMs: Date.now() - startedAt
-    }
+    timings: { ...timings, totalMs: Date.now() - startedAt }
   }, "ragfind search results built");
 
-  return {
-    knowledgeBases: scope.knowledgeBases,
-    results: [...grouped.values()]
-      .map((entry) => ({
-        ...entry,
-        snippets: entry.snippets
-          .sort((left, right) => right.score - left.score)
-          .slice(0, 4)
-      }))
-      .sort((left, right) => right.score - left.score)
-          .slice(0, topK)
-  };
+  return { knowledgeBases: scope.knowledgeBases, results: limited, facets, suggestion };
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -469,598 +579,19 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
-async function readTextFileIfPresent(filePath: string | null | undefined): Promise<string | null> {
-  if (!filePath) {
-    return null;
+async function resolveScopedDocument(documentIdRaw: string) {
+  const documentId = Number(documentIdRaw);
+  if (!Number.isFinite(documentId) || documentId <= 0) {
+    return { status: 400 as const, error: "invalid document id", document: null };
   }
 
-  if (!(await fileExists(filePath))) {
-    return null;
-  }
-
-  try {
-    return await readFile(filePath, "utf8");
-  } catch {
-    return null;
-  }
-}
-
-function detectViewerKind(document: NonNullable<Awaited<ReturnType<typeof findDocument>>>, rawText: string): ViewerKind {
-  const fileType = document.fileType?.toLowerCase() ?? "";
-  const mimeType = document.mimeType?.toLowerCase() ?? "";
-  const sourceRef = document.sourceRef.toLowerCase();
-
-  if (looksLikeHtmlDocument(document) || extractedTextLooksLikeMarkup(rawText)) {
-    return "html";
-  }
-
-  if (["md", "markdown", "mdx"].includes(fileType) || mimeType.includes("markdown") || sourceRef.endsWith(".md") || sourceRef.endsWith(".markdown")) {
-    return "markdown";
-  }
-
-  if (
-    document.sourceType === "git"
-    || VIEWER_CODE_FILE_TYPES.has(fileType)
-    || mimeType.startsWith("text/") && fileType !== "txt"
-  ) {
-    return "code";
-  }
-
-  return "text";
-}
-
-function isViewerSupportedDocument(document: NonNullable<Awaited<ReturnType<typeof findDocument>>>): boolean {
-  if (looksLikeHtmlDocument(document)) {
-    return true;
-  }
-
-  const fileType = document.fileType?.toLowerCase() ?? "";
-  const mimeType = document.mimeType?.toLowerCase() ?? "";
-  const sourceRef = document.sourceRef.toLowerCase();
-
-  if ([...VIEWER_BINARY_MIME_PREFIXES].some((prefix) => mimeType.startsWith(prefix))) {
-    return false;
-  }
-
-  if (VIEWER_BINARY_MIME_TYPES.has(mimeType) || VIEWER_BINARY_FILE_TYPES.has(fileType)) {
-    return false;
-  }
-
-  if (["md", "markdown", "mdx", "txt", "text"].includes(fileType)) {
-    return true;
-  }
-
-  if (VIEWER_CODE_FILE_TYPES.has(fileType)) {
-    return true;
-  }
-
-  if (sourceRef.endsWith(".md") || sourceRef.endsWith(".markdown") || sourceRef.endsWith(".txt")) {
-    return true;
-  }
-
-  if (mimeType.includes("markdown") || mimeType.startsWith("text/")) {
-    return true;
-  }
-
-  return document.sourceType === "git" || document.sourceType.startsWith("crawl");
-}
-
-function detectHighlightLanguage(sourceRef: string, fileType: string | null, mimeType: string | null): string | undefined {
-  const extension = (fileType || sourceRef.split(".").pop() || "").toLowerCase();
-  const mapping: Record<string, string> = {
-    js: "javascript",
-    jsx: "javascript",
-    cjs: "javascript",
-    mjs: "javascript",
-    ts: "typescript",
-    tsx: "typescript",
-    py: "python",
-    rb: "ruby",
-    rs: "rust",
-    go: "go",
-    java: "java",
-    php: "php",
-    sh: "bash",
-    bash: "bash",
-    zsh: "bash",
-    yml: "yaml",
-    yaml: "yaml",
-    md: "markdown",
-    json: "json",
-    css: "css",
-    scss: "scss",
-    less: "less",
-    html: "xml",
-    htm: "xml",
-    xml: "xml",
-    sql: "sql",
-    toml: "ini",
-    ini: "ini",
-    cfg: "ini",
-    conf: "ini"
-  };
-
-  if (mapping[extension]) {
-    return mapping[extension];
-  }
-
-  if (mimeType?.includes("json")) {
-    return "json";
-  }
-  if (mimeType?.includes("xml") || mimeType?.includes("html")) {
-    return "xml";
-  }
-
-  return undefined;
-}
-
-function renderHighlightedCode(rawText: string, sourceRef: string, fileType: string | null, mimeType: string | null): string {
-  const language = detectHighlightLanguage(sourceRef, fileType, mimeType);
-  const highlighted = language && hljs.getLanguage(language)
-    ? hljs.highlight(rawText, { language, ignoreIllegals: true }).value
-    : hljs.highlightAuto(rawText).value;
-
-  return `<pre class="viewer-code"><code class="hljs">${highlighted}</code></pre>`;
-}
-
-async function renderMarkdown(markdown: string): Promise<string> {
-  const { marked } = await import("marked");
-  return marked.parse(markdown, { async: false }) as string;
-}
-
-function renderPlainText(rawText: string): string {
-  return `<pre class="viewer-text">${escapeHtml(rawText)}</pre>`;
-}
-
-function renderMultisourceViewerPage(viewer: ViewerContent): string {
-  const payload = JSON.stringify({
-    kind: viewer.kind,
-    title: viewer.title,
-    sourceRef: viewer.sourceRef,
-    sourceType: viewer.sourceType,
-    fileType: viewer.fileType,
-    mimeType: viewer.mimeType,
-    rawText: viewer.rawText,
-    renderedHtml: viewer.renderedHtml,
-    pageUrl: viewer.pageUrl,
-    sourceUrl: viewer.sourceUrl,
-    originalUrl: viewer.originalUrl,
-    originalName: viewer.originalName
-  }).replace(/</g, "\\u003c");
-
-  return `<!doctype html>
-<html lang="de">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${escapeHtml(viewer.title)} | RAGfind</title>
-    <style>
-      :root {
-        color-scheme: dark light;
-        --bg: #f4efe6;
-        --panel: rgba(255,255,255,0.84);
-        --panel-strong: rgba(255,255,255,0.94);
-        --border: rgba(15,23,42,0.1);
-        --text: #16202a;
-        --muted: #5c6774;
-        --accent: #0d6e6e;
-        --accent-soft: rgba(13,110,110,0.14);
-        --raw-bg: #f8fafc;
-      }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --bg: #0d1218;
-          --panel: rgba(255,255,255,0.045);
-          --panel-strong: rgba(255,255,255,0.06);
-          --border: rgba(255,255,255,0.1);
-          --text: #f4f7fb;
-          --muted: #9cabba;
-          --accent: #87d1c7;
-          --accent-soft: rgba(135,209,199,0.16);
-          --raw-bg: #0f1720;
-        }
-      }
-      * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        background:
-          radial-gradient(circle at top left, rgba(13,110,110,0.18), transparent 34%),
-          radial-gradient(circle at top right, rgba(190,120,70,0.14), transparent 30%),
-          var(--bg);
-        color: var(--text);
-        font-family: "Segoe UI", "Helvetica Neue", sans-serif;
-      }
-      .shell {
-        max-width: 1360px;
-        margin: 0 auto;
-        padding: 28px 18px 40px;
-      }
-      .header {
-        display: flex;
-        justify-content: space-between;
-        gap: 16px;
-        align-items: flex-start;
-        margin-bottom: 18px;
-      }
-      .title {
-        margin: 0;
-        font-size: clamp(1.5rem, 2vw, 2.3rem);
-        line-height: 1.1;
-      }
-      .meta {
-        margin-top: 10px;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-      }
-      .badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        border: 1px solid var(--border);
-        background: var(--panel);
-        border-radius: 999px;
-        padding: 7px 12px;
-        color: var(--muted);
-        font-size: 0.82rem;
-      }
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-      }
-      .action {
-        border: 1px solid var(--border);
-        background: var(--panel);
-        color: var(--text);
-        text-decoration: none;
-        border-radius: 999px;
-        padding: 10px 14px;
-        font-size: 0.9rem;
-      }
-      .source {
-        margin: 0 0 18px;
-        color: var(--muted);
-        word-break: break-word;
-      }
-      .viewer {
-        border: 1px solid var(--border);
-        background: var(--panel-strong);
-        border-radius: 24px;
-        overflow: hidden;
-        backdrop-filter: blur(14px);
-      }
-      .viewer-tabs {
-        display: flex;
-        gap: 10px;
-        padding: 14px;
-        border-bottom: 1px solid var(--border);
-        background: var(--panel);
-      }
-      .viewer-tab {
-        border: 1px solid var(--border);
-        background: transparent;
-        color: var(--muted);
-        border-radius: 999px;
-        padding: 9px 14px;
-        cursor: pointer;
-        font: inherit;
-      }
-      .viewer-tab.active {
-        background: var(--accent-soft);
-        color: var(--text);
-        border-color: rgba(13,110,110,0.34);
-      }
-      .viewer-pane {
-        display: none;
-        min-height: 70vh;
-      }
-      .viewer-pane.active {
-        display: block;
-      }
-      .viewer-rendered {
-        padding: 24px;
-      }
-      .viewer-rendered.markdown {
-        max-width: 900px;
-        margin: 0 auto;
-        line-height: 1.7;
-      }
-      .viewer-rendered.markdown h1,
-      .viewer-rendered.markdown h2,
-      .viewer-rendered.markdown h3 {
-        line-height: 1.2;
-      }
-      .viewer-rendered.markdown pre,
-      .viewer-rendered.markdown code,
-      .viewer-code,
-      .viewer-text,
-      .viewer-raw {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-      }
-      .viewer-rendered.markdown pre,
-      .viewer-code,
-      .viewer-text,
-      .viewer-raw {
-        margin: 0;
-        padding: 22px;
-        overflow: auto;
-        background: var(--raw-bg);
-      }
-      .viewer-text,
-      .viewer-raw {
-        white-space: pre-wrap;
-        word-break: break-word;
-      }
-      .viewer-raw-shell {
-        padding: 0;
-      }
-      .source a {
-        color: var(--accent);
-        text-decoration: none;
-        border-bottom: 1px solid var(--accent-soft);
-      }
-      .source a:hover { border-bottom-color: var(--accent); }
-      .viewer-iframe {
-        width: 100%;
-        min-height: 78vh;
-        border: 0;
-        background: white;
-      }
-      .hljs-comment,
-      .hljs-quote { color: #64748b; }
-      .hljs-keyword,
-      .hljs-selector-tag,
-      .hljs-literal { color: #0f766e; }
-      .hljs-string,
-      .hljs-doctag,
-      .hljs-regexp { color: #9a3412; }
-      .hljs-title,
-      .hljs-section,
-      .hljs-name { color: #1d4ed8; }
-      .hljs-number,
-      .hljs-symbol,
-      .hljs-bullet { color: #7c3aed; }
-      @media (prefers-color-scheme: dark) {
-        .hljs-comment,
-        .hljs-quote { color: #94a3b8; }
-        .hljs-keyword,
-        .hljs-selector-tag,
-        .hljs-literal { color: #7dd3fc; }
-        .hljs-string,
-        .hljs-doctag,
-        .hljs-regexp { color: #fdba74; }
-        .hljs-title,
-        .hljs-section,
-        .hljs-name { color: #c4b5fd; }
-        .hljs-number,
-        .hljs-symbol,
-        .hljs-bullet { color: #f9a8d4; }
-      }
-    </style>
-  </head>
-  <body>
-    <div class="shell">
-      <div class="header">
-        <div>
-          <h1 class="title">${escapeHtml(viewer.title)}</h1>
-          <div class="meta">
-            <span class="badge">${escapeHtml(viewer.sourceType)}</span>
-            ${viewer.fileType ? `<span class="badge">.${escapeHtml(viewer.fileType)}</span>` : ""}
-            ${viewer.mimeType ? `<span class="badge">${escapeHtml(viewer.mimeType)}</span>` : ""}
-            <span class="badge">Lokaler Multi-Source-Viewer</span>
-          </div>
-        </div>
-        <div class="actions">
-          <a class="action" href="/">Zur Suche</a>
-          ${viewer.sourceUrl ? `<a class="action" href="${escapeHtml(viewer.sourceUrl)}" target="_blank" rel="noreferrer noopener">Originalseite &#8599;</a>` : ""}
-          ${viewer.originalUrl ? `<a class="action" href="${escapeHtml(viewer.originalUrl)}" target="_blank" rel="noreferrer">${viewer.pageUrl ? "Gespeicherte Kopie" : "Originaldatei"}</a>` : ""}
-        </div>
-      </div>
-      <p class="source">${
-        viewer.sourceUrl
-          ? `<a href="${escapeHtml(viewer.sourceUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(viewer.sourceRef)}</a>`
-          : escapeHtml(viewer.sourceRef)
-      }</p>
-
-      <section class="viewer">
-        <div class="viewer-tabs">
-          <button class="viewer-tab active" data-tab="rendered">Ansicht</button>
-          <button class="viewer-tab" data-tab="raw">Plaintext</button>
-        </div>
-        <div id="pane-rendered" class="viewer-pane active"></div>
-        <div id="pane-raw" class="viewer-pane viewer-raw-shell"></div>
-      </section>
-    </div>
-    <script>
-      const payload = ${payload};
-      const renderedPane = document.getElementById("pane-rendered");
-      const rawPane = document.getElementById("pane-raw");
-      const tabs = [...document.querySelectorAll(".viewer-tab")];
-
-      if (payload.pageUrl) {
-        const iframe = document.createElement("iframe");
-        iframe.className = "viewer-iframe";
-        // Weder allow-scripts noch allow-same-origin: der Rahmen zeigt fremdes,
-        // gecrawltes HTML. Zusammen heben diese beiden Werte die Sandbox
-        // gegenseitig auf - der Inhalt koennte dann auf das RAGfind-Dokument
-        // zugreifen. Ohne sie bekommt der Rahmen einen eigenen, leeren Ursprung
-        // und fuehrt nichts aus; Stylesheets, Bilder und Schriften laedt er
-        // weiterhin. allow-popups erlaubt, dass ein Link der Kopie die echte
-        // Seite in einem neuen Tab oeffnet.
-        iframe.setAttribute("sandbox", "allow-popups allow-popups-to-escape-sandbox");
-        iframe.setAttribute("referrerpolicy", "no-referrer");
-        iframe.src = payload.pageUrl;
-        renderedPane.appendChild(iframe);
-      } else {
-        renderedPane.className = "viewer-pane active viewer-rendered " + payload.kind;
-        renderedPane.innerHTML = payload.renderedHtml;
-      }
-
-      const rawPre = document.createElement("pre");
-      rawPre.className = "viewer-raw";
-      rawPre.textContent = payload.rawText;
-      rawPane.replaceChildren(rawPre);
-
-      tabs.forEach((tab) => {
-        tab.addEventListener("click", () => {
-          tabs.forEach((candidate) => candidate.classList.toggle("active", candidate === tab));
-          document.getElementById("pane-rendered").classList.toggle("active", tab.dataset.tab === "rendered");
-          document.getElementById("pane-raw").classList.toggle("active", tab.dataset.tab === "raw");
-        });
-      });
-    </script>
-  </body>
-</html>`;
-}
-
-async function buildViewerContent(document: NonNullable<Awaited<ReturnType<typeof findDocument>>>): Promise<ViewerContent> {
-  const file = await getDocumentFile(document.id);
-  const absolutePath = file?.relativePath ? path.join(env.ORIGINAL_STORAGE_DIR, file.relativePath) : null;
-  const localText = await readTextFileIfPresent(absolutePath);
-  const kind = detectViewerKind(document, localText ?? document.extractedText);
-
-  // Bei HTML sind das zwei verschiedene Dinge mit je eigenem Tab: die
-  // gespeicherte Datei ist die Seite ("Ansicht"), der extrahierte Text ist die
-  // lesbare Fassung ("Plaintext"). Wuerde hier wie bei allen anderen Arten die
-  // lokale Datei fuer beides genommen, zeigte der Plaintext-Tab bei gecrawlten
-  // Seiten HTML-Quelltext statt Text.
-  const hasStoredPage = kind === "html" && localText !== null;
-  const rawText = hasStoredPage ? document.extractedText : (localText ?? document.extractedText);
-
-  let renderedHtml = "";
-  if (hasStoredPage) {
-    // Die Seite wird NICHT eingebettet, sondern vom Endpunkt unten geladen.
-    // Ueber srcdoc erbt der Rahmen die CSP des Elterndokuments und hat keine
-    // eigene Adresse - beides sorgt dafuer, dass externe Stylesheets und Bilder
-    // je nach Umgebung stillschweigend wegfallen. Mit eigener URL laedt der
-    // Browser Unterresourcen normal, und der Endpunkt setzt eine passende CSP.
-    renderedHtml = "";
-  } else if (kind === "html") {
-    // Kein gespeichertes HTML - etwa bei Seiten, die vor dessen Einfuehrung
-    // gecrawlt wurden. Dann gibt es nur den extrahierten Text; als Textansicht
-    // ist er wenigstens lesbar. Styling laesst sich nicht rekonstruieren, die
-    // Seite wurde damals nie gespeichert.
-    renderedHtml = renderPlainText(document.extractedText);
-  } else if (kind === "markdown") {
-    renderedHtml = await renderMarkdown(rawText);
-  } else if (kind === "code") {
-    renderedHtml = renderHighlightedCode(rawText, document.sourceRef, document.fileType, document.mimeType);
-  } else {
-    renderedHtml = renderPlainText(rawText);
-  }
-
-  return {
-    title: document.title ?? document.sourceRef,
-    sourceRef: document.sourceRef,
-    sourceType: document.sourceType,
-    fileType: document.fileType,
-    mimeType: document.mimeType,
-    kind,
-    rawText,
-    renderedHtml,
-    pageUrl: hasStoredPage ? `/view/${document.id}/page` : null,
-    sourceUrl: document.sourceUrl ?? (/^https?:\/\//i.test(document.sourceRef) ? document.sourceRef : null),
-    originalUrl: file ? `/api/documents/${document.id}/original` : null,
-    originalName: file?.originalName ?? null
-  };
-}
-
-function looksLikeHtmlDocument(document: Awaited<ReturnType<typeof findDocument>>): boolean {
+  const scope = await resolveRagfindScope();
+  const document = await findDocument({ documentId, allowedKnowledgeBaseIds: scope.knowledgeBaseIds });
   if (!document) {
-    return false;
+    return { status: 404 as const, error: "document not found in configured RAGfind knowledge bases", document: null };
   }
 
-  if (document.sourceType.startsWith("crawl")) {
-    return true;
-  }
-
-  const mimeType = document.mimeType?.toLowerCase() ?? "";
-  const fileType = document.fileType?.toLowerCase() ?? "";
-  if (mimeType.includes("html") || ["html", "htm", "xhtml"].includes(fileType)) {
-    return true;
-  }
-
-  const extractedTextStart = document.extractedText.slice(0, 500).toLowerCase();
-  return extractedTextStart.includes("<html") || extractedTextStart.includes("<!doctype html") || extractedTextStart.includes("<body");
-}
-
-function extractedTextLooksLikeMarkup(text: string): boolean {
-  const normalized = text.slice(0, 500).trim().toLowerCase();
-  return normalized.includes("<html") || normalized.includes("<!doctype html") || normalized.includes("<body") || normalized.includes("<div") || normalized.includes("<main");
-}
-
-function renderExtractedTextPage(title: string, extractedText: string): string {
-  const escapedTitle = title
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;");
-  const escapedText = extractedText
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-
-  return `<!doctype html>
-<html lang="de">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${escapedTitle}</title>
-    <style>
-      :root { color-scheme: light dark; }
-      body {
-        margin: 0;
-        font-family: Georgia, "Times New Roman", serif;
-        background: #f5f1e8;
-        color: #1f2328;
-      }
-      main {
-        max-width: 980px;
-        margin: 0 auto;
-        padding: 32px 20px 48px;
-      }
-      h1 {
-        margin: 0 0 8px;
-        font-size: 2rem;
-      }
-      p {
-        margin: 0 0 24px;
-        color: #5b6470;
-      }
-      pre {
-        margin: 0;
-        padding: 24px;
-        white-space: pre-wrap;
-        word-break: break-word;
-        background: rgba(255, 255, 255, 0.82);
-        border: 1px solid rgba(15, 23, 42, 0.08);
-        border-radius: 18px;
-        font: 16px/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-      }
-      @media (prefers-color-scheme: dark) {
-        body {
-          background: #10151d;
-          color: #f2f5f8;
-        }
-        p {
-          color: #a7b0bc;
-        }
-        pre {
-          background: rgba(255, 255, 255, 0.04);
-          border-color: rgba(255, 255, 255, 0.08);
-        }
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>${escapedTitle}</h1>
-      <p>Lokale gespeicherte Kopie aus RAGfind.</p>
-      <pre>${escapedText}</pre>
-    </main>
-  </body>
-</html>`;
+  return { status: 200 as const, error: null, document };
 }
 
 async function start() {
@@ -1076,8 +607,7 @@ async function start() {
         knowledgeBases: scope.knowledgeBases.map((knowledgeBase) => ({
           id: knowledgeBase.id,
           slug: knowledgeBase.slug,
-          name: knowledgeBase.name,
-          documentCount: knowledgeBase.documentCount
+          name: knowledgeBase.name
         }))
       });
     } catch (error) {
@@ -1088,16 +618,23 @@ async function start() {
   app.get("/api/search", async (request, response, next) => {
     try {
       const query = String(request.query.q ?? "").trim();
-      const topKRaw = Number(request.query.topK ?? 12);
-      const topK = Math.min(Math.max(Number.isFinite(topKRaw) ? topKRaw : 12, 1), 20);
+      const limitRaw = Number(request.query.limit ?? SEARCH_RESULT_LIMIT);
+      const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : SEARCH_RESULT_LIMIT, 1), 60);
       if (query.length < 2) {
         response.status(400).json({ error: "query must contain at least 2 characters" });
         return;
       }
 
+      const cacheKey = `${query.toLowerCase()}|${limit}`;
+      const cached = readSearchCache(cacheKey);
+      if (cached) {
+        response.json({ ...(cached as Record<string, unknown>), cached: true });
+        return;
+      }
+
       const startedAt = Date.now();
-      const { knowledgeBases, results } = await buildSearchResults(query, topK);
-      response.json({
+      const { knowledgeBases, results, facets, suggestion } = await buildSearchResults(query, limit);
+      const payload = {
         query,
         productName: "RAGfind",
         searchScope: {
@@ -1107,8 +644,14 @@ async function start() {
         },
         resultCount: results.length,
         tookMs: Date.now() - startedAt,
+        facets,
+        suggestion,
+        cached: false,
         results
-      });
+      };
+
+      writeSearchCache(cacheKey, payload);
+      response.json(payload);
     } catch (error) {
       next(error);
     }
@@ -1116,51 +659,23 @@ async function start() {
 
   app.get("/api/documents/:documentId/original", async (request, response, next) => {
     try {
-      const documentId = Number(request.params.documentId);
-      if (!Number.isFinite(documentId) || documentId <= 0) {
-        response.status(400).json({ error: "invalid document id" });
+      const resolved = await resolveScopedDocument(request.params.documentId);
+      if (!resolved.document) {
+        response.status(resolved.status).json({ error: resolved.error });
         return;
       }
 
-      const scope = await resolveRagfindScope();
-      const document = await findDocument({
-        documentId,
-        allowedKnowledgeBaseIds: scope.knowledgeBaseIds
-      });
-      if (!document) {
-        response.status(404).json({ error: "document not found in configured RAGfind knowledge bases" });
-        return;
-      }
-
+      const document = resolved.document;
       const file = await getDocumentFile(document.id);
       const forceDownload = String(request.query.download ?? "").trim() === "1";
-      if (!file) {
+
+      if (!file?.relativePath) {
+        // Gecrawlte Seiten ohne lokale Kopie: statt 404 wenigstens den Text.
         if (document.sourceType.startsWith("crawl")) {
-          if (looksLikeHtmlDocument(document) || extractedTextLooksLikeMarkup(document.extractedText)) {
-            response.type("text/html; charset=utf-8");
-            response.send(document.extractedText);
-            return;
-          }
-
           response.type("text/html; charset=utf-8");
-          response.send(renderExtractedTextPage(document.title || document.sourceRef, document.extractedText));
-          return;
-        }
-
-        response.status(404).json({ error: "no original file available" });
-        return;
-      }
-
-      if (!file.relativePath) {
-        if (document.sourceType.startsWith("crawl")) {
-          if (looksLikeHtmlDocument(document) || extractedTextLooksLikeMarkup(document.extractedText)) {
-            response.type("text/html; charset=utf-8");
-            response.send(document.extractedText);
-            return;
-          }
-
-          response.type("text/html; charset=utf-8");
-          response.send(renderExtractedTextPage(document.title || document.sourceRef, document.extractedText));
+          response.send(isWebPageDocument(document) && /<\w+[\s>]/.test(document.extractedText.slice(0, 500))
+            ? document.extractedText
+            : renderExtractedTextPage(document.title || document.sourceRef, document.extractedText));
           return;
         }
 
@@ -1179,7 +694,7 @@ async function start() {
       }
       if (file.originalName) {
         const disposition = forceDownload ? "attachment" : "inline";
-        response.setHeader("Content-Disposition", `${disposition}; filename="${file.originalName.replace(/\"/g, "")}"`);
+        response.setHeader("Content-Disposition", `${disposition}; filename="${file.originalName.replace(/"/g, "")}"`);
       }
       response.sendFile(absolutePath);
     } catch (error) {
@@ -1187,32 +702,25 @@ async function start() {
     }
   });
 
+  // Die Ansicht des Dokuments. Anders als frueher leitet sie nie auf einen
+  // Download um: jedes Format bekommt die Darstellung, die zu ihm passt, und
+  // notfalls eine Karte mit Dateiangaben statt eines stillen Downloads.
   app.get("/view/:documentId", async (request, response, next) => {
     try {
-      const documentId = Number(request.params.documentId);
-      if (!Number.isFinite(documentId) || documentId <= 0) {
-        response.status(400).json({ error: "invalid document id" });
+      const resolved = await resolveScopedDocument(request.params.documentId);
+      if (!resolved.document) {
+        response.status(resolved.status).json({ error: resolved.error });
         return;
       }
 
-      const scope = await resolveRagfindScope();
-      const document = await findDocument({
-        documentId,
-        allowedKnowledgeBaseIds: scope.knowledgeBaseIds
+      const file = await getDocumentFile(resolved.document.id);
+      const viewer = await buildViewerPayload(resolved.document, file, {
+        query: String(request.query.q ?? "").trim(),
+        highlight: String(request.query.hl ?? "").trim()
       });
-      if (!document) {
-        response.status(404).json({ error: "document not found in configured RAGfind knowledge bases" });
-        return;
-      }
 
-      if (!isViewerSupportedDocument(document)) {
-        response.redirect(`/api/documents/${document.id}/original?download=1`);
-        return;
-      }
-
-      const viewer = await buildViewerContent(document);
       response.type("text/html; charset=utf-8");
-      response.send(renderMultisourceViewerPage(viewer));
+      response.send(renderViewerShell(viewer));
     } catch (error) {
       next(error);
     }
@@ -1227,26 +735,16 @@ async function start() {
   // Speichern bleibt als zweite Schicht, ebenso die Sandbox am Rahmen.
   app.get("/view/:documentId/page", async (request, response, next) => {
     try {
-      const documentId = Number(request.params.documentId);
-      if (!Number.isFinite(documentId) || documentId <= 0) {
-        response.status(400).json({ error: "invalid document id" });
+      const resolved = await resolveScopedDocument(request.params.documentId);
+      if (!resolved.document) {
+        response.status(resolved.status).json({ error: resolved.error });
         return;
       }
 
-      const scope = await resolveRagfindScope();
-      const document = await findDocument({
-        documentId,
-        allowedKnowledgeBaseIds: scope.knowledgeBaseIds
-      });
-      if (!document) {
-        response.status(404).json({ error: "document not found in configured RAGfind knowledge bases" });
-        return;
-      }
-
+      const document = resolved.document;
       const file = await getDocumentFile(document.id);
-      const absolutePath = file?.relativePath ? path.join(env.ORIGINAL_STORAGE_DIR, file.relativePath) : null;
-      const storedPage = await readTextFileIfPresent(absolutePath);
-      if (!storedPage) {
+      const absolutePath = absoluteFilePath(file);
+      if (!absolutePath || !(await fileExists(absolutePath))) {
         response.status(404).json({ error: "no stored page available for this document" });
         return;
       }
@@ -1256,10 +754,14 @@ async function start() {
         [
           "default-src 'none'",
           "script-src 'none'",
-          "style-src * 'unsafe-inline'",
-          "img-src * data: blob:",
-          "font-src * data:",
-          "media-src *",
+          // Nachgeladenes laeuft ueber /view/:id/asset und ist damit
+          // gleicher Herkunft. Fremde Adressen bleiben erlaubt, damit eine
+          // Kopie mit uebersehenem Verweis nicht schlechter aussieht als
+          // vorher.
+          "style-src 'self' * 'unsafe-inline'",
+          "img-src 'self' * data: blob:",
+          "font-src 'self' * data:",
+          "media-src 'self' *",
           "form-action 'none'",
           "frame-ancestors 'self'"
         ].join("; ")
@@ -1268,11 +770,143 @@ async function start() {
       // Die Originalseite soll nicht erfahren, aus welchem Archiv der Abruf kommt.
       response.setHeader("Referrer-Policy", "no-referrer");
       response.type("text/html; charset=utf-8");
-      response.send(storedPage);
+
+      const storedPage = await readFile(absolutePath, "utf8");
+      const pageUrl = document.sourceUrl ?? document.sourceRef;
+      response.send(rewriteStoredPage(storedPage, pageUrl, document.id));
     } catch (error) {
       next(error);
     }
   });
+
+  // Holt ein Stylesheet, Bild oder eine Schrift, auf die eine gespeicherte
+  // Seite verweist, und liefert es unter der Herkunft von RAGfind aus. Ohne
+  // diesen Umweg blockiert die Cross-Origin-Resource-Policy vieler Seiten die
+  // eigenen Dateien, sobald sie in einem fremden Dokument stehen.
+  app.get("/view/:documentId/asset", async (request, response, next) => {
+    try {
+      const resolved = await resolveScopedDocument(request.params.documentId);
+      if (!resolved.document) {
+        response.status(resolved.status).json({ error: resolved.error });
+        return;
+      }
+
+      const target = String(request.query.u ?? "").trim();
+      if (!target) {
+        response.status(400).json({ error: "missing asset url" });
+        return;
+      }
+
+      const asset = await fetchRemoteAsset(target);
+      if (!asset) {
+        response.status(404).json({ error: "asset not available" });
+        return;
+      }
+
+      response.setHeader("Cache-Control", "private, max-age=86400");
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      // Der Rahmen im Viewer laeuft ohne allow-same-origin und hat damit eine
+      // undurchsichtige Herkunft. "same-origin" wuerde ihm die Datei genauso
+      // verweigern, wie es die Originalseite tut - der Umweg waere umsonst.
+      response.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+      response.type(asset.contentType);
+
+      // In einem Stylesheet stehen weitere Adressen - Schriften, Hintergruende,
+      // @import. Bleiben die unberuehrt, bricht die Kette beim ersten
+      // Weiterverweis genauso ab wie zuvor die erste Datei.
+      if (asset.contentType.startsWith("text/css")) {
+        response.send(rewriteCssUrls(asset.body.toString("utf8"), target, resolved.document.id));
+        return;
+      }
+
+      response.send(asset.body);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Die PDF-Fassung eines Dokuments: das Original, wenn es eins ist, sonst die
+  // von LibreOffice erzeugte Kopie. Der eingebettete Betrachter laedt von hier.
+  app.get("/view/:documentId/pdf", async (request, response, next) => {
+    try {
+      const resolved = await resolveScopedDocument(request.params.documentId);
+      if (!resolved.document) {
+        response.status(resolved.status).json({ error: resolved.error });
+        return;
+      }
+
+      const document = resolved.document;
+      const file = await getDocumentFile(document.id);
+      const sourcePath = absoluteFilePath(file);
+      if (!sourcePath) {
+        response.status(404).json({ error: "no local original file available" });
+        return;
+      }
+
+      const pdfPath = await ensurePdfRendition(sourcePath, document.fileType, document.mimeType);
+      if (!pdfPath) {
+        response.status(404).json({ error: "no pdf rendition available" });
+        return;
+      }
+
+      response.type("application/pdf");
+      response.setHeader("Content-Disposition", "inline");
+      response.setHeader("Cache-Control", "private, max-age=3600");
+      response.sendFile(pdfPath);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Vorschaubild fuer die Trefferliste: bei PDF und Office die erste Seite,
+  // bei Bildern das Bild selbst.
+  app.get("/view/:documentId/thumb", async (request, response, next) => {
+    try {
+      const resolved = await resolveScopedDocument(request.params.documentId);
+      if (!resolved.document) {
+        response.status(resolved.status).json({ error: resolved.error });
+        return;
+      }
+
+      const document = resolved.document;
+      const file = await getDocumentFile(document.id);
+      const sourcePath = absoluteFilePath(file);
+      if (!sourcePath || !(await fileExists(sourcePath))) {
+        response.status(404).json({ error: "no thumbnail available" });
+        return;
+      }
+
+      const mimeType = (file?.mimeType ?? document.mimeType ?? "").toLowerCase();
+      if (mimeType.startsWith("image/")) {
+        response.setHeader("Cache-Control", "private, max-age=86400");
+        response.type(mimeType);
+        response.sendFile(sourcePath);
+        return;
+      }
+
+      if (!isPdfFile(document.fileType, document.mimeType, sourcePath) && !isOfficeConvertible(document.fileType, document.mimeType)) {
+        response.status(404).json({ error: "no thumbnail available" });
+        return;
+      }
+
+      const pdfPath = await ensurePdfRendition(sourcePath, document.fileType, document.mimeType);
+      const thumbnailPath = pdfPath ? await ensurePdfThumbnail(pdfPath) : null;
+      if (!thumbnailPath) {
+        response.status(404).json({ error: "no thumbnail available" });
+        return;
+      }
+
+      response.setHeader("Cache-Control", "private, max-age=86400");
+      response.type("image/jpeg");
+      response.sendFile(thumbnailPath);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // pdf.js liegt im Paket, nicht im Repo. Statisch ausgeliefert braucht der
+  // Betrachter weder Build-Schritt noch kopierte Dateien im Arbeitsbaum.
+  app.use("/pdfjs", express.static(PDFJS_ROOT, { maxAge: "7d", immutable: true }));
 
   app.use(express.static(RAGFIND_STATIC_ROOT));
   app.get("*", (_request, response) => {

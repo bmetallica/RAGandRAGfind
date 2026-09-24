@@ -27,6 +27,7 @@
           <button class="search-submit" type="submit">Suchen</button>
         </div>
       </form>
+      <div class="recent-searches hidden" id="recent-searches"></div>
       <p class="scope-note" id="scope-note">Lade Suchbereich ...</p>
     </main>
 
@@ -46,9 +47,18 @@
         </form>
       </header>
 
-      <section class="results-meta" id="results-meta"></section>
-      <section class="results-list" id="results-list"></section>
-      <section class="empty-state hidden" id="empty-state"></section>
+      <div class="results-layout">
+        <div class="results-main">
+          <section class="results-meta" id="results-meta"></section>
+          <p class="results-suggestion hidden" id="results-suggestion"></p>
+          <section class="results-list" id="results-list"></section>
+          <div class="results-more hidden" id="results-more">
+            <button class="load-more" id="load-more" type="button">Weitere Treffer anzeigen</button>
+          </div>
+          <section class="empty-state hidden" id="empty-state"></section>
+        </div>
+        <aside class="results-filters hidden" id="results-filters" aria-label="Filter"></aside>
+      </div>
     </main>
   </div>
 
