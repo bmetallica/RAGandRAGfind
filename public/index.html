@@ -158,6 +158,28 @@
                 </label>
               </div>
 
+              <details class="mt-4 rounded-2xl border border-black/10 bg-cloud/55 px-4 py-3 dark:border-white/10 dark:bg-dusk/65">
+                <summary class="cursor-pointer text-sm font-semibold text-black/80 dark:text-white/85">
+                  Zugriffsweg (optional)
+                </summary>
+                <p class="mt-2 text-xs text-black/55 dark:text-white/50">
+                  Leer lassen f&uuml;r den normalen Weg. Beides gilt nur f&uuml;r diesen Crawl &mdash;
+                  das Gegenst&uuml;ck zu <code>curl -x http://proxy:3128 https://ziel -k</code>.
+                </p>
+                <label class="mt-3 block text-sm font-medium">Proxy</label>
+                <input name="proxyUrl" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="http://10.50.174.124:3128" />
+                <label class="mt-3 flex items-start gap-3 text-sm">
+                  <input type="checkbox" name="ignoreTlsErrors" class="mt-1" />
+                  <span>
+                    <span class="block font-semibold text-black/80 dark:text-white/85">Zertifikatspr&uuml;fung &uuml;bergehen</span>
+                    <span class="mt-1 block text-xs text-black/55 dark:text-white/50">
+                      F&uuml;r interne Seiten mit selbst ausgestelltem oder abgelaufenem Zertifikat.
+                      Gilt nur f&uuml;r die Anfragen dieses Crawls, nicht f&uuml;r den Rest des Systems.
+                    </span>
+                  </span>
+                </label>
+              </details>
+
               <button class="mt-5 rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Crawl enqueue</button>
             </form>
 

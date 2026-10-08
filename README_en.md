@@ -195,6 +195,44 @@ result carries `failed` alongside `pages`, `files`, and `duplicates`.
 Via the API the switches are `downloadDocuments` and `downloadImages` on `POST /api/jobs/crawl`;
 when absent the same defaults apply. Scheduled crawls can carry them in the schedule payload.
 
+### Access path: proxy and certificate checking
+
+Both are optional and apply to one crawl only — the counterpart to:
+
+```bash
+curl -v -x http://10.50.174.124:3128 https://lv.intra-ve.p -k
+```
+
+In the admin UI they live under **Zugriffsweg (optional)** in the crawl form; via the API they are
+two fields on `POST /api/jobs/crawl`:
+
+```json
+{
+  "startUrl": "https://lv.intra-ve.p/",
+  "knowledgeBaseId": 1,
+  "proxyUrl": "http://10.50.174.124:3128",
+  "ignoreTlsErrors": true
+}
+```
+
+- `proxyUrl` — HTTP or HTTPS proxy used to fetch pages and linked files. The scheme may be omitted
+  (`10.50.174.124:3128` is read as `http://`), and credentials in the address
+  (`http://user:password@proxy:3128`) are supported. An unusable address is rejected by the API with
+  `400` instead of surfacing later as a crawl error in the worker.
+- `ignoreTlsErrors` — skips certificate checking for this crawl's requests. For internal sites with
+  a self-signed or expired certificate.
+
+Without them nothing changes: no proxy, certificates are checked. Nothing is set globally —
+`NODE_TLS_REJECT_UNAUTHORIZED` stays untouched, and the leniency applies only to this run's
+connections. Scheduled crawls carry both fields in the schedule payload.
+
+The path is recorded on the document (`crawlProxyUrl`, `crawlIgnoreTlsErrors` in the metadata,
+**without** credentials) and reused by RAGfind's archive view: the stylesheets and images of a
+stored intranet page are fetched through the same proxy later on. Without that, the copy of an
+internal page would be text only, because the server cannot reach those addresses on its own. For
+documents with a proxy the asset proxy's private-address guard does not apply — the request goes
+exclusively through the configured proxy, and whoever configured it deliberately opened that path.
+
 ## Updating
 
 `./update.sh` brings a running installation up to date without losing data:

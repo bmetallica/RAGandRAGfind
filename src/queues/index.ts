@@ -10,6 +10,10 @@ export interface CrawlJobPayload {
   // Bilder nein.
   downloadDocuments?: boolean;
   downloadImages?: boolean;
+  // Optionaler Zugriffsweg fuer genau diesen Lauf. Fehlen beide, wird direkt
+  // und mit Zertifikatspruefung geholt.
+  proxyUrl?: string | null;
+  ignoreTlsErrors?: boolean;
 }
 
 export interface SyncJobPayload {

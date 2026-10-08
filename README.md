@@ -209,6 +209,45 @@ neben `pages`, `files` und `duplicates` deshalb auch `failed`.
 `POST /api/jobs/crawl`; fehlen sie, gelten dieselben Standardwerte. Für geplante Crawls können sie
 im Payload des Zeitplans stehen.
 
+### Zugriffsweg: Proxy und Zertifikatsprüfung
+
+Beides ist optional und gilt nur für den jeweiligen Crawl — das Gegenstück zu:
+
+```bash
+curl -v -x http://10.50.174.124:3128 https://lv.intra-ve.p -k
+```
+
+Im Admin-UI steht es unter **Zugriffsweg (optional)** im Crawl-Formular, über die API sind es zwei
+Felder in `POST /api/jobs/crawl`:
+
+```json
+{
+  "startUrl": "https://lv.intra-ve.p/",
+  "knowledgeBaseId": 1,
+  "proxyUrl": "http://10.50.174.124:3128",
+  "ignoreTlsErrors": true
+}
+```
+
+- `proxyUrl` — HTTP- oder HTTPS-Proxy, über den die Seiten und verlinkten Dateien geholt werden.
+  Das Schema darf fehlen (`10.50.174.124:3128` wird als `http://` gelesen), Zugangsdaten in der
+  Adresse (`http://nutzer:kennwort@proxy:3128`) werden unterstützt. Eine unbrauchbare Adresse weist
+  die API sofort mit `400` ab, statt sie erst im Worker als Crawl-Fehler auffallen zu lassen.
+- `ignoreTlsErrors` — übergeht die Zertifikatsprüfung für die Anfragen dieses Crawls. Für interne
+  Seiten mit selbst ausgestelltem oder abgelaufenem Zertifikat.
+
+Ohne Angabe bleibt alles wie bisher: kein Proxy, Zertifikate werden geprüft. Gesetzt wird nichts
+global — `NODE_TLS_REJECT_UNAUTHORIZED` bleibt unberührt, und die Nachsicht gilt ausschließlich für
+die Verbindungen dieses einen Laufs. Geplante Crawls tragen beide Felder im Payload des Zeitplans.
+
+Der Weg wird am Dokument vermerkt (`crawlProxyUrl`, `crawlIgnoreTlsErrors` in den Metadaten,
+**ohne** Zugangsdaten) und von der Archivansicht in RAGfind wiederverwendet: die Stylesheets und
+Bilder einer gespeicherten Intranetseite werden später über denselben Proxy nachgeladen. Ohne das
+wäre die Kopie einer internen Seite nur Text, weil der Server die Adressen von sich aus nicht
+erreicht. Für Dokumente mit Proxy entfällt dabei die Sperre gegen private Adressen im Asset-Proxy —
+der Abruf läuft ausschließlich über den eingetragenen Proxy, und wer ihn gesetzt hat, hat den Weg
+in dieses Netz bewusst geöffnet.
+
 ## Aktualisieren
 
 `./update.sh` bringt eine laufende Installation auf den neuesten Stand, ohne Daten zu verlieren:

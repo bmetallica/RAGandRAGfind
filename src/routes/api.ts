@@ -5,6 +5,7 @@ import multer from "multer";
 import axios from "axios";
 import { pool } from "../db/pool";
 import { env } from "../config/env";
+import { normalizeProxyUrl, redactProxyUrl } from "../utils/httpAccess";
 import { crawlQueue, gitRepoSyncQueue, ingestQueue, reembedQueue, syncQueue } from "../queues";
 import { SchedulerService } from "../services/schedulerService";
 import { VectorService } from "../services/vectorService";
@@ -3427,8 +3428,38 @@ export function createApiRouter(schedulerService: SchedulerService) {
         : request.body.downloadDocuments === true || request.body.downloadDocuments === "true";
       const downloadImages = request.body.downloadImages === true || request.body.downloadImages === "true";
 
-      const job = await crawlQueue.add("crawl", { startUrl, maxDepth, knowledgeBaseId, downloadDocuments, downloadImages });
-      response.status(202).json({ jobId: job.id, startUrl, maxDepth, knowledgeBaseId, downloadDocuments, downloadImages });
+      // Beides optional: ohne Angabe bleibt es beim direkten Abruf mit
+      // Zertifikatspruefung. Ein ungueltiger Proxy wird hier abgewiesen und
+      // nicht erst im Worker - dort faellt er sonst als Crawl-Fehler auf.
+      let proxyUrl: string | null = null;
+      try {
+        proxyUrl = normalizeProxyUrl(request.body.proxyUrl);
+      } catch (error) {
+        response.status(400).json({ error: error instanceof Error ? error.message : "invalid proxyUrl" });
+        return;
+      }
+      const ignoreTlsErrors = request.body.ignoreTlsErrors === true || request.body.ignoreTlsErrors === "true";
+
+      const job = await crawlQueue.add("crawl", {
+        startUrl,
+        maxDepth,
+        knowledgeBaseId,
+        downloadDocuments,
+        downloadImages,
+        proxyUrl,
+        ignoreTlsErrors
+      });
+      response.status(202).json({
+        jobId: job.id,
+        startUrl,
+        maxDepth,
+        knowledgeBaseId,
+        downloadDocuments,
+        downloadImages,
+        // Zugangsdaten eines Proxys gehoeren nicht in die Antwort.
+        proxyUrl: redactProxyUrl(proxyUrl),
+        ignoreTlsErrors
+      });
     } catch (error) {
       next(error);
     }

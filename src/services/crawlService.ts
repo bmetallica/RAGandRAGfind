@@ -8,6 +8,7 @@ import { env } from "../config/env";
 import { IngestionService } from "./ingestionService";
 import { isDownloadableDocument, isDownloadableImage } from "../utils/files";
 import { logger } from "../utils/logger";
+import { buildHttpAccessConfig, hasHttpAccessOptions, redactProxyUrl, type HttpAccessOptions } from "../utils/httpAccess";
 
 interface CrawlOptions {
   startUrl: string;
@@ -19,6 +20,12 @@ interface CrawlOptions {
   // bildlastigen Seite ist das um Groessenordnungen teurer als der Rest des
   // Crawls. Standardmaessig aus.
   downloadImages?: boolean;
+  // Beides optional und nur fuer diesen einen Lauf: ein Proxy, ueber den die
+  // Seiten geholt werden, und das Uebergehen der Zertifikatspruefung - das
+  // Gegenstueck zu "curl -x http://proxy:3128 https://ziel -k". Ohne Angabe
+  // bleibt alles wie bisher: kein Proxy, Zertifikate werden geprueft.
+  proxyUrl?: string | null;
+  ignoreTlsErrors?: boolean;
 }
 
 interface QueueEntry {
@@ -99,6 +106,19 @@ function resolveFinalResponseUrl(response: { request?: { res?: { responseUrl?: s
   }
 }
 
+// Nur was die Archivansicht spaeter wirklich braucht, und ohne Zugangsdaten.
+function buildAccessMetadata(access: HttpAccessOptions | null | undefined): Record<string, unknown> {
+  if (!access) {
+    return {};
+  }
+
+  const proxyUrl = redactProxyUrl(access.proxyUrl);
+  return {
+    ...(proxyUrl ? { crawlProxyUrl: proxyUrl } : {}),
+    ...(access.ignoreTlsErrors === true ? { crawlIgnoreTlsErrors: true } : {})
+  };
+}
+
 export class CrawlService {
   constructor(private readonly ingestionService = new IngestionService()) {}
 
@@ -109,6 +129,22 @@ export class CrawlService {
     const downloadImages = options.downloadImages === true;
     const soll = (url: string): boolean =>
       (downloadDocuments && isDownloadableDocument(url)) || (downloadImages && isDownloadableImage(url));
+    const access: HttpAccessOptions = {
+      proxyUrl: options.proxyUrl ?? null,
+      ignoreTlsErrors: options.ignoreTlsErrors === true
+    };
+    const requestConfig = buildHttpAccessConfig(access);
+    if (hasHttpAccessOptions(access)) {
+      logger.info(
+        {
+          startUrl: options.startUrl,
+          proxy: redactProxyUrl(access.proxyUrl),
+          ignoreTlsErrors: access.ignoreTlsErrors === true
+        },
+        "crawl uses a dedicated proxy or skips certificate checks"
+      );
+    }
+
     const allowedOrigins = new Set<string>([startUrl.origin]);
     const visited = new Set<string>();
     const queue: QueueEntry[] = [{ url: startUrl.toString(), depth: 0 }];
@@ -137,7 +173,9 @@ export class CrawlService {
           visited,
           queue,
           maxDepth,
-          soll
+          soll,
+          access,
+          requestConfig
         });
         pages += result.pages;
         files += result.files;
@@ -161,8 +199,10 @@ export class CrawlService {
     queue: QueueEntry[];
     maxDepth: number;
     soll: (url: string) => boolean;
+    access: HttpAccessOptions;
+    requestConfig: ReturnType<typeof buildHttpAccessConfig>;
   }): Promise<{ pages: number; files: number; duplicates: number; failed: number }> {
-    const { current, options, allowedOrigins, visited, queue, maxDepth, soll } = input;
+    const { current, options, allowedOrigins, visited, queue, maxDepth, soll, access, requestConfig } = input;
     let pages = 0;
     let files = 0;
     let duplicates = 0;
@@ -171,7 +211,8 @@ export class CrawlService {
     const response = await axios.get<ArrayBuffer>(current.url, {
       responseType: "arraybuffer",
       timeout: 30_000,
-      validateStatus: (status) => status >= 200 && status < 400
+      validateStatus: (status) => status >= 200 && status < 400,
+      ...requestConfig
     });
     const finalUrl = resolveFinalResponseUrl(response, current.url);
     const finalLocation = new URL(finalUrl);
@@ -180,7 +221,7 @@ export class CrawlService {
 
     const contentType = response.headers["content-type"] ?? mime.lookup(finalUrl) ?? "application/octet-stream";
     if (!String(contentType).includes("text/html") && soll(finalUrl)) {
-      const result = await this.ingestRemoteFile(finalUrl, Buffer.from(response.data), options.knowledgeBaseId ?? null);
+      const result = await this.ingestRemoteFile(finalUrl, Buffer.from(response.data), options.knowledgeBaseId ?? null, access);
       files += 1;
       if (result.duplicate) {
         duplicates += 1;
@@ -203,7 +244,8 @@ export class CrawlService {
         contentType: String(contentType),
         knowledgeBaseId: options.knowledgeBaseId ?? null,
         depth: current.depth,
-        requestedUrl: current.url
+        requestedUrl: current.url,
+        access
       });
 
       pages += 1;
@@ -242,9 +284,10 @@ export class CrawlService {
           const fileResponse = await axios.get<ArrayBuffer>(resolved.toString(), {
             responseType: "arraybuffer",
             timeout: 30_000,
-            validateStatus: (status) => status >= 200 && status < 400
+            validateStatus: (status) => status >= 200 && status < 400,
+            ...requestConfig
           });
-          const result = await this.ingestRemoteFile(resolved.toString(), Buffer.from(fileResponse.data), options.knowledgeBaseId ?? null);
+          const result = await this.ingestRemoteFile(resolved.toString(), Buffer.from(fileResponse.data), options.knowledgeBaseId ?? null, access);
           files += 1;
           if (result.duplicate) {
             duplicates += 1;
@@ -283,6 +326,7 @@ export class CrawlService {
     knowledgeBaseId: number | null;
     depth: number;
     requestedUrl: string;
+    access: HttpAccessOptions;
   }) {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "rag-crawl-page-"));
     try {
@@ -306,7 +350,12 @@ export class CrawlService {
         originalExternalUrl: input.finalUrl,
         metadata: {
           crawlDepth: input.depth,
-          redirectSourceUrl: input.finalUrl !== input.requestedUrl ? input.requestedUrl : undefined
+          redirectSourceUrl: input.finalUrl !== input.requestedUrl ? input.requestedUrl : undefined,
+          // Der Weg, auf dem diese Seite erreichbar war. Die Archivansicht in
+          // RAGfind holt Stylesheets und Bilder der Kopie spaeter nach und
+          // braucht denselben Weg - eine Intranetseite waere sonst nur Text.
+          // Zugangsdaten im Proxy werden dabei nicht mitgeschrieben.
+          ...buildAccessMetadata(input.access)
         }
       });
     } finally {
@@ -314,7 +363,7 @@ export class CrawlService {
     }
   }
 
-  private async ingestRemoteFile(url: string, buffer: Buffer, knowledgeBaseId?: number | null) {
+  private async ingestRemoteFile(url: string, buffer: Buffer, knowledgeBaseId?: number | null, access?: HttpAccessOptions) {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "rag-crawl-"));
     try {
       const pathname = new URL(url).pathname;
@@ -332,7 +381,8 @@ export class CrawlService {
         knowledgeBaseId: knowledgeBaseId ?? null,
         sourceUrl: url,
         metadata: {
-          downloadedFrom: url
+          downloadedFrom: url,
+          ...buildAccessMetadata(access)
         }
       });
     } finally {

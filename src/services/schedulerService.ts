@@ -48,7 +48,11 @@ export class SchedulerService {
               // immer in keiner Wissensdatenbank, egal was im Zeitplan stand.
               knowledgeBaseId: typeof row.payload.knowledgeBaseId === "number" ? row.payload.knowledgeBaseId : null,
               downloadDocuments: row.payload.downloadDocuments !== false,
-              downloadImages: row.payload.downloadImages === true
+              downloadImages: row.payload.downloadImages === true,
+              // Ein geplanter Crawl ins Intranet braucht denselben Zugriffsweg
+              // wie der von Hand gestartete.
+              proxyUrl: typeof row.payload.proxyUrl === "string" ? row.payload.proxyUrl : null,
+              ignoreTlsErrors: row.payload.ignoreTlsErrors === true
             });
             return;
           }

@@ -579,6 +579,15 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
+// Wurde die Seite ueber einen Proxy oder ohne Zertifikatspruefung gecrawlt,
+// gilt derselbe Weg fuer ihre nachgeladenen Dateien - sonst zeigt die Kopie
+// einer Intranetseite nichts als Text.
+function readCrawlAccess(metadata: Record<string, unknown> | null | undefined) {
+  const proxyUrl = typeof metadata?.crawlProxyUrl === "string" ? metadata.crawlProxyUrl : null;
+  const ignoreTlsErrors = metadata?.crawlIgnoreTlsErrors === true;
+  return proxyUrl || ignoreTlsErrors ? { proxyUrl, ignoreTlsErrors } : null;
+}
+
 async function resolveScopedDocument(documentIdRaw: string) {
   const documentId = Number(documentIdRaw);
   if (!Number.isFinite(documentId) || documentId <= 0) {
@@ -797,7 +806,7 @@ async function start() {
         return;
       }
 
-      const asset = await fetchRemoteAsset(target);
+      const asset = await fetchRemoteAsset(target, readCrawlAccess(resolved.document.metadata));
       if (!asset) {
         response.status(404).json({ error: "asset not available" });
         return;

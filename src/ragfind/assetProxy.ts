@@ -3,6 +3,7 @@ import net from "node:net";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import { logger } from "../utils/logger";
+import { buildHttpAccessConfig, redactProxyUrl, type HttpAccessOptions } from "../utils/httpAccess";
 
 // Warum es diesen Umweg gibt
 //
@@ -191,7 +192,10 @@ export interface FetchedAsset {
   body: Buffer;
 }
 
-export async function fetchRemoteAsset(rawUrl: string): Promise<FetchedAsset | null> {
+// `access` stammt aus den Metadaten des Dokuments: der Weg, auf dem die Seite
+// gecrawlt wurde. Eine Intranetseite ist von hier aus sonst nicht erreichbar,
+// und ihre Kopie bliebe ungestylt.
+export async function fetchRemoteAsset(rawUrl: string, access?: HttpAccessOptions | null): Promise<FetchedAsset | null> {
   let target: URL;
   try {
     target = new URL(rawUrl);
@@ -203,14 +207,23 @@ export async function fetchRemoteAsset(rawUrl: string): Promise<FetchedAsset | n
     return null;
   }
 
-  try {
-    const addresses = await dns.lookup(target.hostname, { all: true });
-    if (addresses.length === 0 || addresses.some((entry) => isPrivateAddress(entry.address))) {
-      logger.warn({ url: rawUrl }, "asset proxy refused a non-public address");
+  // Ohne Proxy gilt die Regel unveraendert: nur oeffentliche Adressen, damit
+  // eine gecrawlte Seite den Server nicht ins eigene Netz schickt.
+  //
+  // Mit Proxy greift sie nicht - und darf es auch nicht. Die Adresse loest
+  // hier gar nicht auf, der Proxy tut das; und wer einen Proxy fuer genau
+  // dieses Dokument gesetzt hat, hat den Weg ins betreffende Netz bewusst
+  // geoeffnet. Der Abruf geht dann ausschliesslich ueber diesen Proxy.
+  if (!access?.proxyUrl) {
+    try {
+      const addresses = await dns.lookup(target.hostname, { all: true });
+      if (addresses.length === 0 || addresses.some((entry) => isPrivateAddress(entry.address))) {
+        logger.warn({ url: rawUrl }, "asset proxy refused a non-public address");
+        return null;
+      }
+    } catch {
       return null;
     }
-  } catch {
-    return null;
   }
 
   try {
@@ -222,7 +235,8 @@ export async function fetchRemoteAsset(rawUrl: string): Promise<FetchedAsset | n
       // Ohne Referrer erfaehrt die Originalseite nicht, aus welchem Archiv der
       // Abruf kommt - dieselbe Zurueckhaltung wie beim Rahmen selbst.
       headers: { "User-Agent": "RAGfind-Archive/1.0", Accept: "*/*" },
-      validateStatus: (status) => status >= 200 && status < 300
+      validateStatus: (status) => status >= 200 && status < 300,
+      ...buildHttpAccessConfig(access)
     });
 
     const contentType = String(response.headers["content-type"] ?? "application/octet-stream").split(";")[0].trim().toLowerCase();
@@ -233,7 +247,10 @@ export async function fetchRemoteAsset(rawUrl: string): Promise<FetchedAsset | n
 
     return { contentType, body: Buffer.from(response.data) };
   } catch (error) {
-    logger.debug({ err: error, url: rawUrl }, "asset proxy request failed");
+    logger.debug(
+      { err: error, url: rawUrl, proxy: redactProxyUrl(access?.proxyUrl) },
+      "asset proxy request failed"
+    );
     return null;
   }
 }

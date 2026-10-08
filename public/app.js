@@ -1710,7 +1710,11 @@ onSubmitJson(document.getElementById("crawl-form"), "/api/jobs/crawl", (data) =>
   maxDepth: Number(data.get("maxDepth") || 0),
   knowledgeBaseId: Number(data.get("knowledgeBaseId") || 0) || null,
   downloadDocuments: data.get("downloadDocuments") === "on",
-  downloadImages: data.get("downloadImages") === "on"
+  downloadImages: data.get("downloadImages") === "on",
+  // Leeres Feld heisst: kein Proxy. Ein leerer String waere eine Angabe und
+  // wuerde in der Pruefung als ungueltige Adresse auffallen.
+  proxyUrl: String(data.get("proxyUrl") || "").trim() || null,
+  ignoreTlsErrors: data.get("ignoreTlsErrors") === "on"
 }));
 
 onSubmitJson(document.getElementById("sync-form"), "/api/jobs/sync", (data) => ({
