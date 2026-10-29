@@ -20,6 +20,9 @@ export interface McpPrincipalRecord {
   tokenPreview: string;
   description: string | null;
   isEnabled: boolean;
+  // Schreibrecht fuer den opencode-MCP-Endpunkt. Standard aus: ein
+  // bestehender Lesezugang bekommt durch ein Update keines dazu.
+  canWrite: boolean;
   createdAt: string;
   updatedAt: string;
   knowledgeBases: Array<{ id: number; slug: string; name: string }>;
@@ -29,6 +32,7 @@ export interface AuthenticatedMcpPrincipal {
   id: number;
   name: string;
   isEnabled: boolean;
+  canWrite: boolean;
   knowledgeBaseIds: number[];
 }
 
@@ -209,6 +213,7 @@ export async function listMcpPrincipals(): Promise<McpPrincipalRecord[]> {
     token_preview: string;
     description: string | null;
     is_enabled: boolean;
+    can_write: boolean;
     created_at: string;
     updated_at: string;
     knowledge_bases: Array<{ id: number; slug: string; name: string }> | null;
@@ -220,6 +225,7 @@ export async function listMcpPrincipals(): Promise<McpPrincipalRecord[]> {
       p.token_preview,
       p.description,
       p.is_enabled,
+      p.can_write,
       p.created_at::text,
       p.updated_at::text,
       COALESCE(
@@ -243,6 +249,7 @@ export async function listMcpPrincipals(): Promise<McpPrincipalRecord[]> {
     tokenPreview: row.token_preview,
     description: row.description,
     isEnabled: row.is_enabled,
+    canWrite: row.can_write === true,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     knowledgeBases: row.knowledge_bases ?? []
@@ -253,6 +260,7 @@ export async function createMcpPrincipal(input: {
   name: string;
   description?: string | null;
   isEnabled?: boolean;
+  canWrite?: boolean;
   knowledgeBaseIds?: number[];
 }): Promise<{ principal: McpPrincipalRecord; token: string }> {
   const name = input.name.trim();
@@ -268,11 +276,18 @@ export async function createMcpPrincipal(input: {
     await client.query("BEGIN");
     const insertResult = await client.query<{ id: number }>(
       `
-        INSERT INTO mcp_principals (name, token_hash, token_preview, description, is_enabled)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO mcp_principals (name, token_hash, token_preview, description, is_enabled, can_write)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id
       `,
-      [name, tokenHash, buildTokenPreview(token), input.description?.trim() || null, input.isEnabled ?? true]
+      [
+        name,
+        tokenHash,
+        buildTokenPreview(token),
+        input.description?.trim() || null,
+        input.isEnabled ?? true,
+        input.canWrite === true
+      ]
     );
 
     const principalId = insertResult.rows[0].id;
@@ -305,6 +320,7 @@ export async function updateMcpPrincipal(id: number, input: {
   name: string;
   description?: string | null;
   isEnabled?: boolean;
+  canWrite?: boolean;
   knowledgeBaseIds?: number[];
 }): Promise<McpPrincipalRecord | null> {
   const name = input.name.trim();
@@ -321,10 +337,11 @@ export async function updateMcpPrincipal(id: number, input: {
         SET name = $2,
             description = $3,
             is_enabled = $4,
+            can_write = $5,
             updated_at = NOW()
         WHERE id = $1
       `,
-      [id, name, input.description?.trim() || null, input.isEnabled ?? true]
+      [id, name, input.description?.trim() || null, input.isEnabled ?? true, input.canWrite === true]
     );
 
     if ((result.rowCount ?? 0) === 0) {
@@ -398,6 +415,7 @@ export async function resolveMcpPrincipalByToken(token: string): Promise<Authent
     id: number;
     name: string;
     is_enabled: boolean;
+    can_write: boolean;
     knowledge_base_ids: number[] | null;
   }>(
     `
@@ -405,6 +423,7 @@ export async function resolveMcpPrincipalByToken(token: string): Promise<Authent
         p.id,
         p.name,
         p.is_enabled,
+        p.can_write,
         COALESCE(array_agg(pkb.knowledge_base_id ORDER BY pkb.knowledge_base_id) FILTER (WHERE pkb.knowledge_base_id IS NOT NULL), '{}'::bigint[]) AS knowledge_base_ids
       FROM mcp_principals p
       LEFT JOIN principal_knowledge_bases pkb ON pkb.principal_id = p.id
@@ -424,6 +443,7 @@ export async function resolveMcpPrincipalByToken(token: string): Promise<Authent
     id: row.id,
     name: row.name,
     isEnabled: row.is_enabled,
-    knowledgeBaseIds: row.knowledge_base_ids ?? []
+    canWrite: row.can_write === true,
+    knowledgeBaseIds: (row.knowledge_base_ids ?? []).map((value) => Number(value))
   };
 }

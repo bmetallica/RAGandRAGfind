@@ -27,6 +27,14 @@ export interface IngestTextInput {
   originalFilePath?: string;
   originalFileName?: string;
   originalExternalUrl?: string;
+  // Beides optional, damit alle bestehenden Aufrufer unveraendert laufen.
+  //
+  // Die Klassifizierung ist ein LLM-Roundtrip vor dem Chunking - bei einem
+  // langsamen oder nicht erreichbaren Provider dauert das bis zur
+  // Zeitueberschreitung. Fuer Aufrufer, die den Typ ohnehin kennen (der
+  // Schreibpfad von opencode etwa), ist das nur Wartezeit ohne Erkenntnis.
+  documentType?: string;
+  skipClassification?: boolean;
 }
 
 export interface IngestFileInput {
@@ -207,24 +215,31 @@ export class IngestionService {
     // generically-named OCR'd scientific PDF still gets book-appropriate
     // chunking instead of silently falling back to "generic" sizing.
     let classificationMetadata: Record<string, unknown> | null = null;
-    let resolvedDocumentType = heuristicDocumentType;
-    try {
-      const classification = await this.classificationService.classifyDocument({
-        title: sanitizedTitle,
-        sourceRef: sanitizedSourceRef,
-        sourceType: sanitizedSourceType,
-        fileType: sanitizedFileType,
-        text: normalizedText,
-        fallbackDocumentType: heuristicDocumentType
-      });
+    let resolvedDocumentType = input.documentType?.trim() || heuristicDocumentType;
 
-      classificationMetadata = this.classificationService.buildClassificationMetadata(sanitizedMetadata, classification);
-      resolvedDocumentType = classification.documentType;
-    } catch (error) {
-      logger.warn({ err: error, sourceRef: sanitizedSourceRef }, "document classification failed; falling back to heuristic document type");
-      classificationMetadata = {
-        documentType: heuristicDocumentType
-      };
+    if (input.skipClassification) {
+      // Kein Roundtrip: der Aufrufer kennt den Typ. Chunk-Groesse und Overlap
+      // kommen weiter aus den Einstellungen dieses Typs.
+      classificationMetadata = { documentType: resolvedDocumentType };
+    } else {
+      try {
+        const classification = await this.classificationService.classifyDocument({
+          title: sanitizedTitle,
+          sourceRef: sanitizedSourceRef,
+          sourceType: sanitizedSourceType,
+          fileType: sanitizedFileType,
+          text: normalizedText,
+          fallbackDocumentType: heuristicDocumentType
+        });
+
+        classificationMetadata = this.classificationService.buildClassificationMetadata(sanitizedMetadata, classification);
+        resolvedDocumentType = classification.documentType;
+      } catch (error) {
+        logger.warn({ err: error, sourceRef: sanitizedSourceRef }, "document classification failed; falling back to heuristic document type");
+        classificationMetadata = {
+          documentType: resolvedDocumentType
+        };
+      }
     }
 
     const documentMetadata = sanitizeUnknown({

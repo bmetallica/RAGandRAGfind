@@ -672,6 +672,98 @@ Available tools cover:
 - document analysis and summaries
 - document comparison and cross-reference workflows
 
+## opencode MCP
+
+Next to the general MCP endpoint there is a second one, tailored to a coding agent:
+
+```text
+http://localhost:3311/mcp/opencode
+```
+
+The reason is hit rate, not taste. The general server exposes 25 tools — deadlines, meeting actions,
+document comparison, version comparison. At most five of those are useful to a coding agent; the
+rest take up context and degrade tool selection. This endpoint exposes seven and shares everything
+below them with the first: authentication, knowledge base scope, retrieval pipeline, ingestion.
+
+### The tools
+
+| Tool | Purpose |
+| --- | --- |
+| `search_knowledge` | Hybrid search across the assigned knowledge bases. `kind` filters to `code`, `doc`, `note` or `file`, `pathPrefix` to a path prefix. |
+| `get_file` | One file or document verbatim, optionally a line range (`startLine`, `endLine`). Output is line-numbered. |
+| `list_sources` | Inventory for navigating: which files, documents and notes exist at all. |
+| `get_note` | One of the agent's own notes verbatim — what it takes to extend a note instead of writing a second one. |
+| `save_note` | Store knowledge under a stable key. The same key **replaces** the previous note. |
+| `save_file` | Store a source file under its path; the same path replaces the previous content. |
+| `forget` | Delete one of the agent's own notes or files. Touches only self-written documents, never crawled, uploaded or git-synced ones. |
+
+### Access and write permission
+
+This endpoint always requires an MCP token — unlike `/mcp`, which lets everyone through while no
+principals exist. What may be read is still governed by the principal's knowledge base assignment.
+
+Writing is a separate permission: **Schreiben erlaubt (opencode-MCP)** in the MCP principal form.
+It defaults to off, including when an existing installation is updated — a read-only token does not
+gain write access. Without it the three write tools answer with a refusal rather than an error.
+
+### Settings
+
+opencode's working model is not in the code but in the admin UI under **opencode-MCP** — the same
+installation runs in another landscape with another model without anyone touching constants:
+
+- **Working model** and **context window** — the window pre-fills the budgets (about four characters
+  per token, a sixteenth of that for a single answer, at most 24,000 characters).
+- **Response budget** and **hard cap** — every answer is clipped to it, and the clipping is made
+  visible in the text. An agent that cannot see something is missing draws wrong conclusions from
+  half a file.
+- **Hits per search** and **maximum**.
+- **Target knowledge base for writing** — unnecessary when exactly one is assigned.
+
+An entry for a specific principal overrides the defaults completely, so one installation can serve
+several opencode landscapes with different models.
+
+### What happens on a write
+
+- **A stable key instead of a pile.** `save_note` writes to `opencode://note/<key>`, `save_file` to
+  `opencode://file/<path>`. An existing version is replaced, not placed next to it — otherwise three
+  revisions leave three documents contradicting each other.
+- **No classification.** The document type comes from the tool. The usual LLM round trip before
+  chunking takes until timeout with a slow provider; an agent will not wait for that twice. Writes
+  land in tenths of a second.
+- **Findable immediately.** Chunks are stored as `pending` and are searchable via full text at once;
+  the worker adds vectors as soon as the embedding model is reachable. Writing and searching keep
+  working even while embedding is down.
+- **Provenance stays visible.** Every document carries `author`, `principal`, `writtenAt` and, on
+  replacement, `supersededDocumentId` in its metadata. Since learned knowledge may live in the same
+  knowledge base as the code, the source type is the dividing line: the admin UI lists everything
+  the agent wrote under **opencode-MCP**, with a delete button per entry.
+- **Possible credentials are flagged, not rejected.** Private keys, AWS and GitHub tokens, JWTs,
+  credentials in URLs and assignments like `password = …` set `containsSecrets` in the metadata, log
+  a warning and add one to the answer the agent gets. The content is still stored — a false positive
+  must not block knowledge — but stays findable and deletable in the admin UI.
+
+### Configuring opencode
+
+In `opencode.json` (project or `~/.config/opencode/`):
+
+```json
+{
+  "mcp": {
+    "rag": {
+      "type": "remote",
+      "url": "http://localhost:3311/mcp/opencode",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer mcp_your-token"
+      }
+    }
+  }
+}
+```
+
+The token comes from **MCP-Zugänge** in the admin UI and is shown exactly once. For write access the
+same principal needs **Schreiben erlaubt**.
+
 ## HTTP API Highlights
 
 ### Retrieval

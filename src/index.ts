@@ -10,6 +10,7 @@ import { resolveMcpPrincipalByToken } from "./services/adminAccessService";
 import { authenticateAdminUser } from "./services/adminAuthService";
 import { createApiRouter } from "./routes/api";
 import { createMcpRouter } from "./mcp/server";
+import { createOpencodeMcpRouter } from "./mcp/opencodeServer";
 import { SchedulerService } from "./services/schedulerService";
 import { DocumentClassificationService } from "./services/classificationService";
 import { searchIndexService } from "./services/searchIndexService";
@@ -168,6 +169,9 @@ async function start() {
       next(error);
     }
   });
+  // Der zugeschnittene Endpunkt muss vor dem allgemeinen stehen: sonst faengt
+  // /mcp die Anfragen ab, bevor /mcp/opencode an die Reihe kommt.
+  app.use("/mcp/opencode", createOpencodeMcpRouter());
   app.use("/mcp", createMcpRouter());
   app.use("/api", createApiRouter(schedulerService));
   app.use(express.static(path.resolve(process.cwd(), "public")));

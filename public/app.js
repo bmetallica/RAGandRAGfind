@@ -29,6 +29,10 @@ const documentTypeSelectEls = [...document.querySelectorAll("[data-document-type
 const categorySelectEls = [...document.querySelectorAll("[data-category-select]")];
 const sourceTypeSelectEls = [...document.querySelectorAll("[data-source-type-select]")];
 const mcpTokenOutputEl = document.getElementById("mcp-token-output");
+const opencodeMcpFormEl = document.getElementById("opencode-mcp-form");
+const opencodePrincipalSelectEl = document.getElementById("opencode-principal-select");
+const opencodeMcpDeleteEl = document.getElementById("opencode-mcp-delete");
+const opencodeMcpDocumentsEl = document.getElementById("opencode-mcp-documents");
 const settingsToggleEl = document.getElementById("settings-toggle");
 const adminAccessToggleEl = document.getElementById("admin-access-toggle");
 const viewNavButtons = [...document.querySelectorAll("[data-view]")];
@@ -82,6 +86,8 @@ const state = {
   documents: [],
   knowledgeBases: [],
   mcpPrincipals: [],
+  opencodeMcpSettings: [],
+  opencodeMcpDefaults: null,
   adminUsers: [],
   documentTypeSettings: [],
   ragfindSettings: {
@@ -831,6 +837,10 @@ function renderImportKnowledgeBaseOptions() {
     // The directory sync accepts an empty value, which makes the worker map one
     // subdirectory per knowledge base instead of importing everything into one.
     const allowAuto = select.hasAttribute("data-allow-auto-knowledge-base");
+    // Wie "Automatisch", nur mit anderer Beschriftung: ein leerer Wert heisst
+    // hier "keine Vorgabe", nicht "ein Unterordner je Wissensdatenbank".
+    const allowEmpty = select.hasAttribute("data-allow-empty");
+    const emptyLabel = select.dataset.emptyLabel || "Keine Vorgabe";
     const previousRawValue = String(select.value || "");
     const previousValue = Number(previousRawValue);
     const keepAuto = allowAuto && select.dataset.knowledgeBaseInitialised === "true" && previousRawValue === "";
@@ -838,7 +848,7 @@ function renderImportKnowledgeBaseOptions() {
       ? previousValue
       : defaultKnowledgeBaseId;
 
-    if (!options.length && !allowAuto) {
+    if (!options.length && !allowAuto && !allowEmpty) {
       select.innerHTML = '<option value="">Bitte zuerst eine Wissensdatenbank anlegen</option>';
       select.disabled = true;
       return;
@@ -847,6 +857,7 @@ function renderImportKnowledgeBaseOptions() {
     select.disabled = false;
     select.innerHTML = [
       ...(allowAuto ? ['<option value="">Automatisch (Unterordner je Wissensdatenbank)</option>'] : []),
+      ...(allowEmpty ? [`<option value="">${escapeHtml(emptyLabel)}</option>`] : []),
       ...options.map((knowledgeBase) => `<option value="${escapeHtml(knowledgeBase.id)}">${escapeHtml(knowledgeBase.name)}</option>`)
     ].join("");
     select.dataset.knowledgeBaseInitialised = "true";
@@ -854,6 +865,13 @@ function renderImportKnowledgeBaseOptions() {
     // "Automatisch" is the default for the sync form, and an explicit pick by
     // the user survives a re-render.
     if (allowAuto && (keepAuto || !select.dataset.knowledgeBaseTouched)) {
+      select.value = "";
+      return;
+    }
+
+    // Ein Feld ohne Vorgabe bleibt leer, bis jemand ausdruecklich waehlt -
+    // sonst stuende dort eine Wissensdatenbank, die niemand ausgesucht hat.
+    if (allowEmpty && !select.dataset.knowledgeBaseTouched && previousRawValue === "") {
       select.value = "";
       return;
     }
@@ -1052,6 +1070,7 @@ function resetPrincipalForm() {
   state.editingPrincipalId = null;
   mcpPrincipalFormEl.reset();
   mcpPrincipalFormEl.elements.isEnabled.checked = true;
+  mcpPrincipalFormEl.elements.canWrite.checked = false;
   renderPrincipalKnowledgeBaseOptions([]);
 }
 
@@ -1060,6 +1079,7 @@ function fillPrincipalForm(principal) {
   mcpPrincipalFormEl.elements.name.value = principal.name || "";
   mcpPrincipalFormEl.elements.description.value = principal.description || "";
   mcpPrincipalFormEl.elements.isEnabled.checked = Boolean(principal.isEnabled);
+  mcpPrincipalFormEl.elements.canWrite.checked = Boolean(principal.canWrite);
   renderPrincipalKnowledgeBaseOptions((principal.knowledgeBases || []).map((knowledgeBase) => knowledgeBase.id));
 }
 
@@ -1084,6 +1104,7 @@ function renderMcpPrincipals(principals) {
               <div class="flex flex-wrap items-center gap-2">
                 <h3 class="font-semibold text-slate-800 dark:text-slate-100">${escapeHtml(principal.name)}</h3>
                 <span class="rounded-full px-2 py-1 text-[11px] font-semibold ${principal.isEnabled ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/35 dark:text-emerald-200" : "bg-slate-200 text-slate-700 dark:bg-white/10 dark:text-slate-300"}">${principal.isEnabled ? "aktiv" : "deaktiviert"}</span>
+                ${principal.canWrite ? '<span class="rounded-full bg-amber-100 px-2 py-1 text-[11px] font-semibold text-amber-800 dark:bg-amber-900/35 dark:text-amber-200">darf schreiben</span>' : ""}
               </div>
               <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">Token: ${escapeHtml(principal.tokenPreview)}</div>
               <p class="mt-3 text-sm text-slate-600 dark:text-slate-300">${escapeHtml(principal.description || "Keine Beschreibung hinterlegt.")}</p>
@@ -1632,6 +1653,194 @@ async function deleteDocument(documentId, title) {
   }
 }
 
+function findOpencodeSettings(principalId) {
+  const entries = state.opencodeMcpSettings || [];
+  return entries.find((entry) => (entry.principalId ?? null) === principalId) ?? null;
+}
+
+function fillOpencodeMcpForm(settings, isOwnEntry) {
+  if (!opencodeMcpFormEl) {
+    return;
+  }
+
+  const form = opencodeMcpFormEl.elements;
+  form.modelName.value = settings.modelName || "";
+  form.contextWindowTokens.value = settings.contextWindowTokens ?? "";
+  form.responseBudgetChars.value = settings.responseBudgetChars;
+  form.responseHardCapChars.value = settings.responseHardCapChars;
+  form.defaultTopK.value = settings.defaultTopK;
+  form.maxTopK.value = settings.maxTopK;
+  form.writeKnowledgeBaseId.value = settings.writeKnowledgeBaseId ? String(settings.writeKnowledgeBaseId) : "";
+  form.writeKnowledgeBaseId.dataset.knowledgeBaseTouched = "true";
+
+  if (opencodeMcpDeleteEl) {
+    opencodeMcpDeleteEl.classList.toggle("hidden", !isOwnEntry);
+  }
+}
+
+function renderOpencodeMcpSettings(payload) {
+  state.opencodeMcpSettings = payload?.settings || [];
+  state.opencodeMcpDefaults = payload?.defaults || null;
+
+  if (!opencodeMcpFormEl || !opencodePrincipalSelectEl) {
+    return;
+  }
+
+  const previous = opencodePrincipalSelectEl.value;
+  const principals = state.mcpPrincipals || [];
+  opencodePrincipalSelectEl.innerHTML = [
+    '<option value="">Standardwerte (alle Zugaenge ohne eigenen Eintrag)</option>',
+    ...principals.map((principal) => {
+      const own = state.opencodeMcpSettings.some((entry) => entry.principalId === Number(principal.id));
+      return `<option value="${escapeHtml(principal.id)}">${escapeHtml(principal.name)}${own ? " (eigener Eintrag)" : ""}</option>`;
+    })
+  ].join("");
+
+  opencodePrincipalSelectEl.value = previous && [...opencodePrincipalSelectEl.options].some((option) => option.value === previous)
+    ? previous
+    : "";
+
+  const principalId = opencodePrincipalSelectEl.value ? Number(opencodePrincipalSelectEl.value) : null;
+  const ownEntry = principalId === null ? findOpencodeSettings(null) : findOpencodeSettings(principalId);
+  fillOpencodeMcpForm(ownEntry ?? state.opencodeMcpDefaults ?? {
+    modelName: null,
+    contextWindowTokens: null,
+    responseBudgetChars: 4000,
+    responseHardCapChars: 12000,
+    defaultTopK: 6,
+    maxTopK: 20,
+    writeKnowledgeBaseId: null
+  }, Boolean(ownEntry) && principalId !== null);
+}
+
+function renderOpencodeMcpDocuments(payload) {
+  if (!opencodeMcpDocumentsEl) {
+    return;
+  }
+
+  const documents = payload?.documents || [];
+  if (!documents.length) {
+    opencodeMcpDocumentsEl.innerHTML = '<p class="text-sm text-slate-600 dark:text-slate-300">opencode hat noch nichts selbst angelegt.</p>';
+    return;
+  }
+
+  opencodeMcpDocumentsEl.innerHTML = [
+    `<p class="text-sm font-semibold text-black/70 dark:text-white/70">Von opencode angelegt (${documents.length})</p>`,
+    ...documents.map((entry) => `
+      <article class="flex items-start justify-between gap-3 rounded-2xl border border-slate-900/5 bg-shell/55 p-3 text-sm dark:border-white/10 dark:bg-slate-950/45">
+        <div class="min-w-0">
+          <div class="truncate font-medium text-slate-800 dark:text-slate-100">${escapeHtml(entry.title || entry.source_ref)}</div>
+          <div class="mt-1 truncate text-xs text-slate-500 dark:text-slate-400">${escapeHtml(entry.source_ref)}</div>
+          <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            ${escapeHtml(entry.knowledge_base_name || "ohne Wissensdatenbank")}
+            ${entry.principal ? ` &middot; ${escapeHtml(entry.principal)}` : ""}
+            ${entry.contains_secrets ? ' &middot; <span class="font-semibold text-amber-700 dark:text-amber-300">moegliche Zugangsdaten</span>' : ""}
+          </div>
+        </div>
+        <button type="button" data-delete-document="${escapeHtml(entry.id)}" class="shrink-0 rounded-full border border-black/10 bg-white/70 px-3 py-1 text-xs font-semibold transition hover:border-ember dark:border-white/10 dark:bg-white/10">Loeschen</button>
+      </article>
+    `)
+  ].join("");
+}
+
+async function loadOpencodeMcp() {
+  const [settings, documents] = await Promise.all([
+    requestJson("/api/admin/opencode-mcp/settings"),
+    requestJson("/api/admin/opencode-mcp/documents?limit=50")
+  ]);
+  renderOpencodeMcpSettings(settings);
+  renderOpencodeMcpDocuments(documents);
+}
+
+if (opencodePrincipalSelectEl) {
+  opencodePrincipalSelectEl.addEventListener("change", () => {
+    const principalId = opencodePrincipalSelectEl.value ? Number(opencodePrincipalSelectEl.value) : null;
+    const ownEntry = principalId === null ? findOpencodeSettings(null) : findOpencodeSettings(principalId);
+    // Ohne eigenen Eintrag zeigt das Formular die Standardwerte als Vorlage:
+    // Speichern legt daraus einen eigenen Eintrag an.
+    fillOpencodeMcpForm(ownEntry ?? state.opencodeMcpDefaults, Boolean(ownEntry) && principalId !== null);
+  });
+}
+
+if (opencodeMcpFormEl) {
+  // Das Kontextfenster belegt die Budgets vor, solange niemand sie von Hand
+  // gesetzt hat - eine Hilfe, keine Bevormundung.
+  const contextField = opencodeMcpFormEl.elements.contextWindowTokens;
+  contextField.addEventListener("change", () => {
+    const tokens = Number(contextField.value);
+    if (!Number.isFinite(tokens) || tokens <= 0) {
+      return;
+    }
+
+    // Rund vier Zeichen je Token, davon ein Sechzehntel fuer eine einzelne
+    // Antwort - der Rest des Fensters gehoert dem Agenten selbst. Bei sehr
+    // grossen Fenstern bleibt es bei 24 000 Zeichen: mehr Text in einer
+    // einzigen Antwort hilft keinem Modell, es verdraengt nur den Verlauf.
+    const budget = Math.min(Math.max(Math.round((tokens * 4) / 16 / 500) * 500, 500), 24000);
+    opencodeMcpFormEl.elements.responseBudgetChars.value = budget;
+    opencodeMcpFormEl.elements.responseHardCapChars.value = budget * 3;
+  });
+
+  opencodeMcpFormEl.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const data = new FormData(event.currentTarget);
+      await requestJson("/api/admin/opencode-mcp/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          principalId: String(data.get("principalId") || "") || null,
+          modelName: String(data.get("modelName") || "").trim(),
+          contextWindowTokens: String(data.get("contextWindowTokens") || "") || null,
+          responseBudgetChars: Number(data.get("responseBudgetChars")),
+          responseHardCapChars: Number(data.get("responseHardCapChars")),
+          defaultTopK: Number(data.get("defaultTopK")),
+          maxTopK: Number(data.get("maxTopK")),
+          writeKnowledgeBaseId: String(data.get("writeKnowledgeBaseId") || "") || null
+        })
+      });
+      showToast("opencode-Einstellungen gespeichert");
+      await loadOpencodeMcp();
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  });
+}
+
+if (opencodeMcpDeleteEl) {
+  opencodeMcpDeleteEl.addEventListener("click", async () => {
+    const principalId = opencodePrincipalSelectEl?.value;
+    if (!principalId) {
+      return;
+    }
+
+    try {
+      await requestJson(`/api/admin/opencode-mcp/settings/${principalId}`, { method: "DELETE" });
+      showToast("Eigener Eintrag entfernt, es gelten wieder die Standardwerte");
+      await loadOpencodeMcp();
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  });
+}
+
+if (opencodeMcpDocumentsEl) {
+  opencodeMcpDocumentsEl.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-delete-document]");
+    if (!button) {
+      return;
+    }
+
+    try {
+      await requestJson(`/api/documents/${button.dataset.deleteDocument}`, { method: "DELETE" });
+      showToast("Dokument geloescht");
+      await loadOpencodeMcp();
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  });
+}
+
 async function refreshDashboard() {
   const [status, config, jobs, schedules, knowledgeBases, principals, adminUsers, documentTypeSettings, ragfindSettings, aiProviderSettings, embeddingProgress] = await Promise.all([
     requestJson("/api/status"),
@@ -1658,6 +1867,7 @@ async function refreshDashboard() {
   renderRagfindSettings(ragfindSettings);
   renderAiProviderSettings(aiProviderSettings);
   renderEmbeddingProgress(embeddingProgress);
+  await loadOpencodeMcp();
   await loadDocuments();
 
   schedulePendingEmbeddingPoll(embeddingProgress);
@@ -1838,6 +2048,7 @@ if (mcpPrincipalFormEl) {
         name: String(data.get("name") || "").trim(),
         description: String(data.get("description") || "").trim(),
         isEnabled: Boolean(data.get("isEnabled")),
+        canWrite: Boolean(data.get("canWrite")),
         knowledgeBaseIds: getSelectedKnowledgeBaseIdsFromForm()
       };
       const method = state.editingPrincipalId ? "PATCH" : "POST";

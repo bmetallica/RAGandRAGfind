@@ -695,6 +695,102 @@ Verfügbare Tools decken ab:
 - Dokumentanalysen und Zusammenfassungen
 - Dokumentvergleiche und Cross-Reference-Workflows
 
+## opencode-MCP
+
+Neben dem allgemeinen MCP-Endpunkt gibt es einen zweiten, zugeschnitten auf einen Coding-Agenten:
+
+```text
+http://localhost:3311/mcp/opencode
+```
+
+Der Grund ist nicht Geschmack, sondern Trefferquote. Der allgemeine Server bietet 25 Werkzeuge an —
+Fristen, Meeting-Aufgaben, Dokumentvergleich, Versionsvergleich. Für einen Coding-Agenten sind davon
+höchstens fünf brauchbar, der Rest belegt Kontext und verschlechtert die Werkzeugauswahl. Dieser
+Endpunkt bietet sieben an und teilt sich mit dem ersten alles darunter: Authentifizierung,
+Wissensdatenbank-Scope, Retrieval-Pipeline und Ingestion.
+
+### Die Werkzeuge
+
+| Werkzeug | Zweck |
+| --- | --- |
+| `search_knowledge` | Hybride Suche über die zugeordneten Wissensdatenbanken. `kind` filtert auf `code`, `doc`, `note` oder `file`, `pathPrefix` auf den Pfadanfang. |
+| `get_file` | Eine Datei oder ein Dokument im Wortlaut, wahlweise als Zeilenbereich (`startLine`, `endLine`). Die Ausgabe ist durchnummeriert. |
+| `list_sources` | Inventar zum Navigieren: welche Dateien, Dokumente und Notizen es überhaupt gibt. |
+| `get_note` | Eine eigene Notiz im Wortlaut — Voraussetzung dafür, sie gezielt fortzuschreiben statt eine zweite anzulegen. |
+| `save_note` | Wissen unter einem stabilen Schlüssel ablegen. Derselbe Schlüssel **ersetzt** die vorherige Fassung. |
+| `save_file` | Eine Quelltextdatei unter ihrem Pfad ablegen; derselbe Pfad ersetzt den vorherigen Inhalt. |
+| `forget` | Eine eigene Notiz oder Datei löschen. Fasst ausschließlich Selbstgeschriebenes an, nie gecrawlte, hochgeladene oder per Git synchronisierte Dokumente. |
+
+### Zugang und Schreibrecht
+
+Der Endpunkt verlangt **immer** ein MCP-Token — anders als `/mcp`, der ohne angelegte Zugänge jeden
+durchlässt. Was gelesen werden darf, bestimmt wie gehabt die Wissensdatenbank-Zuordnung des Zugangs.
+
+Schreiben ist ein eigenes Recht: **Schreiben erlaubt (opencode-MCP)** im Formular der MCP-Zugänge.
+Standard ist aus, auch nach einem Update bestehender Installationen — ein vorhandener Lesezugang
+bekommt dadurch kein Schreibrecht. Ohne das Recht antworten die drei Schreibwerkzeuge mit einer
+Ablehnung statt mit einem Fehler.
+
+### Einstellungen
+
+Das Arbeitsmodell von opencode steht nicht im Code, sondern im Admin-UI unter **opencode-MCP** —
+dieselbe Installation läuft so in einer anderen Landschaft mit einem anderen Modell, ohne dass
+jemand Konstanten anfasst:
+
+- **Arbeitsmodell** und **Kontextfenster** — das Fenster belegt die Budgets vor (etwa vier Zeichen
+  je Token, davon ein Sechzehntel für eine einzelne Antwort, höchstens 24 000 Zeichen).
+- **Antwortbudget** und **harter Deckel** — jede Antwort wird darauf gekürzt, und die Kürzung wird
+  im Text sichtbar gemacht. Ein Agent, der nicht sieht, dass etwas fehlt, zieht aus einer halben
+  Datei falsche Schlüsse.
+- **Treffer je Suche** und **Höchstzahl**.
+- **Ziel-Wissensdatenbank zum Schreiben** — bei genau einer zugeordneten entfällt die Angabe.
+
+Ein Eintrag für einen bestimmten Zugang übersteuert die Standardwerte vollständig. So bedient eine
+Installation mehrere opencode-Landschaften mit verschiedenen Modellen.
+
+### Was beim Schreiben passiert
+
+- **Stabiler Schlüssel statt Anhäufen.** `save_note` schreibt nach `opencode://note/<schlüssel>`,
+  `save_file` nach `opencode://file/<pfad>`. Eine vorhandene Fassung wird vollständig ersetzt, nicht
+  danebengelegt — sonst widersprechen sich nach drei Überarbeitungen drei Dokumente.
+- **Keine Klassifizierung.** Der Dokumenttyp kommt vom Werkzeug. Der sonst übliche LLM-Roundtrip vor
+  dem Chunking dauert je nach Provider bis zur Zeitüberschreitung; ein Schreibwerkzeug, das darauf
+  wartet, benutzt kein Agent zweimal. Schreibvorgänge liegen damit im Bereich von Zehntelsekunden.
+- **Sofort auffindbar.** Chunks werden als `pending` gespeichert und sind unmittelbar über die
+  Volltextsuche zu finden; die Vektoren zieht der Worker nach, sobald das Embedding-Modell
+  erreichbar ist. Auch bei nicht erreichbarem Embedding bleibt Schreiben und Suchen also nutzbar.
+- **Herkunft bleibt sichtbar.** Jedes Dokument trägt `author`, `principal`, `writtenAt` und bei
+  Ersetzung `supersededDocumentId` in den Metadaten. Weil Gelerntes in derselben Wissensdatenbank
+  liegen darf wie der Code, ist der Herkunftstyp die Trennlinie: Das Admin-UI listet unter
+  **opencode-MCP** alles auf, was der Agent selbst angelegt hat, mit Löschknopf je Eintrag.
+- **Mögliche Zugangsdaten werden markiert, nicht abgelehnt.** Private Keys, AWS- und GitHub-Tokens,
+  JWTs, Zugangsdaten in URLs und Zuweisungen wie `password = …` setzen `containsSecrets` in den
+  Metadaten, erzeugen einen Protokolleintrag und eine Warnung in der Antwort an den Agenten. Der
+  Inhalt wird gespeichert — ein falscher Treffer soll kein Wissen verhindern — bleibt aber im
+  Admin-UI auffindbar und gezielt löschbar.
+
+### opencode einrichten
+
+In der `opencode.json` (Projekt oder `~/.config/opencode/`):
+
+```json
+{
+  "mcp": {
+    "rag": {
+      "type": "remote",
+      "url": "http://localhost:3311/mcp/opencode",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer mcp_dein-token"
+      }
+    }
+  }
+}
+```
+
+Das Token stammt aus **MCP-Zugänge** im Admin-UI und wird genau einmal angezeigt. Für Schreibzugriff
+muss am selben Zugang **Schreiben erlaubt** gesetzt sein.
+
 ## Wichtige HTTP-API-Endpunkte
 
 ### Retrieval

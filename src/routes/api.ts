@@ -6,6 +6,15 @@ import axios from "axios";
 import { pool } from "../db/pool";
 import { env } from "../config/env";
 import { normalizeProxyUrl, redactProxyUrl } from "../utils/httpAccess";
+import {
+  deleteOpencodeMcpSettings,
+  getOpencodeMcpSettings,
+  listOpencodeMcpSettings,
+  saveOpencodeMcpSettings
+} from "../services/opencodeMcpSettingsService";
+import { AGENT_FILE_SOURCE_TYPE, AGENT_NOTE_SOURCE_TYPE } from "../services/agentKnowledgeService";
+
+const AGENT_SOURCE_TYPES = [AGENT_NOTE_SOURCE_TYPE, AGENT_FILE_SOURCE_TYPE];
 import { crawlQueue, gitRepoSyncQueue, ingestQueue, reembedQueue, syncQueue } from "../queues";
 import { SchedulerService } from "../services/schedulerService";
 import { VectorService } from "../services/vectorService";
@@ -2926,6 +2935,97 @@ export function createApiRouter(schedulerService: SchedulerService) {
     }
   });
 
+  // Einstellungen fuer den opencode-MCP-Endpunkt. Ein Datensatz ohne
+  // principalId sind die Standardwerte, weitere gelten je Zugang - dieselbe
+  // Installation kann so mehrere opencode-Landschaften mit verschiedenen
+  // Modellen bedienen.
+  router.get("/admin/opencode-mcp/settings", async (_request, response, next) => {
+    try {
+      response.json({
+        settings: await listOpencodeMcpSettings(),
+        defaults: await getOpencodeMcpSettings(null)
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/admin/opencode-mcp/settings", async (request, response, next) => {
+    try {
+      const rawPrincipalId = request.body.principalId;
+      const principalId = rawPrincipalId === null || rawPrincipalId === undefined || rawPrincipalId === ""
+        ? null
+        : Number(rawPrincipalId);
+
+      if (principalId !== null && (!Number.isFinite(principalId) || principalId <= 0)) {
+        response.status(400).json({ error: "principalId must be a positive number or empty for the defaults" });
+        return;
+      }
+
+      response.json(await saveOpencodeMcpSettings(principalId, {
+        modelName: typeof request.body.modelName === "string" ? request.body.modelName : null,
+        contextWindowTokens: request.body.contextWindowTokens === null || request.body.contextWindowTokens === undefined || request.body.contextWindowTokens === ""
+          ? null
+          : Number(request.body.contextWindowTokens),
+        responseBudgetChars: Number(request.body.responseBudgetChars),
+        responseHardCapChars: Number(request.body.responseHardCapChars),
+        defaultTopK: Number(request.body.defaultTopK),
+        maxTopK: Number(request.body.maxTopK),
+        writeKnowledgeBaseId: request.body.writeKnowledgeBaseId === null || request.body.writeKnowledgeBaseId === undefined || request.body.writeKnowledgeBaseId === ""
+          ? null
+          : Number(request.body.writeKnowledgeBaseId)
+      }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.delete("/admin/opencode-mcp/settings/:principalId", async (request, response, next) => {
+    try {
+      const principalId = Number(request.params.principalId);
+      if (!Number.isFinite(principalId) || principalId <= 0) {
+        response.status(400).json({ error: "principalId must be a positive number" });
+        return;
+      }
+
+      response.json({ ok: await deleteOpencodeMcpSettings(principalId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Was opencode selbst angelegt hat - getrennt auflistbar, auch wenn es in
+  // derselben Wissensdatenbank liegt wie der Code.
+  router.get("/admin/opencode-mcp/documents", async (request, response, next) => {
+    try {
+      const limit = Math.min(Math.max(Number(request.query.limit ?? 100), 1), 500);
+      const result = await pool.query(
+        `
+          SELECT
+            d.id,
+            d.title,
+            d.source_type,
+            d.source_ref,
+            d.knowledge_base_id,
+            kb.name AS knowledge_base_name,
+            d.updated_at::text,
+            d.metadata->>'principal' AS principal,
+            (d.metadata->>'containsSecrets')::boolean AS contains_secrets
+          FROM documents d
+          LEFT JOIN knowledge_bases kb ON kb.id = d.knowledge_base_id
+          WHERE d.source_type = ANY($1::text[])
+          ORDER BY d.updated_at DESC
+          LIMIT $2::integer
+        `,
+        [AGENT_SOURCE_TYPES, limit]
+      );
+
+      response.json({ documents: result.rows });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.patch("/admin/document-types/:key", async (request, response, next) => {
     try {
       const key = String(request.params.key ?? "").trim().toLowerCase();
@@ -3306,6 +3406,8 @@ export function createApiRouter(schedulerService: SchedulerService) {
         name: String(request.body.name ?? ""),
         description: typeof request.body.description === "string" ? request.body.description : undefined,
         isEnabled: request.body.isEnabled === undefined ? true : Boolean(request.body.isEnabled),
+        // Standard aus: Schreiben ist eine ausdrueckliche Entscheidung.
+        canWrite: Boolean(request.body.canWrite),
         knowledgeBaseIds: Array.isArray(request.body.knowledgeBaseIds)
           ? request.body.knowledgeBaseIds.map((value: unknown) => Number(value)).filter((value: number) => Number.isFinite(value) && value > 0)
           : []
@@ -3329,6 +3431,7 @@ export function createApiRouter(schedulerService: SchedulerService) {
         name: String(request.body.name ?? ""),
         description: typeof request.body.description === "string" ? request.body.description : undefined,
         isEnabled: request.body.isEnabled === undefined ? true : Boolean(request.body.isEnabled),
+        canWrite: Boolean(request.body.canWrite),
         knowledgeBaseIds: Array.isArray(request.body.knowledgeBaseIds)
           ? request.body.knowledgeBaseIds.map((value: unknown) => Number(value)).filter((value: number) => Number.isFinite(value) && value > 0)
           : []

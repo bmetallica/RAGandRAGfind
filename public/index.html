@@ -423,6 +423,17 @@
                   Zugang aktiv
                 </label>
               </div>
+              <label class="flex items-start gap-3 rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 text-sm dark:border-white/10 dark:bg-dusk/80">
+                <input name="canWrite" type="checkbox" class="mt-1 h-4 w-4 rounded border-black/20 text-ember focus:ring-ember" />
+                <span>
+                  <span class="block font-semibold text-black/80 dark:text-white/85">Schreiben erlaubt (opencode-MCP)</span>
+                  <span class="mt-1 block text-xs text-black/55 dark:text-white/50">
+                    Erlaubt diesem Zugang, &uuml;ber <code>/mcp/opencode</code> Notizen und Dateien
+                    anzulegen, zu ersetzen und zu l&ouml;schen. Reine Lesezug&auml;nge bleiben ohne
+                    diesen Haken.
+                  </span>
+                </span>
+              </label>
               <textarea name="description" rows="3" class="w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Beschreibung oder Zuordnung f&uuml;r Team, Gruppe oder Integration"></textarea>
               <div>
                 <div class="mb-2 text-sm font-medium text-black/65 dark:text-white/60">Berechtigte Wissensdatenbanken</div>
@@ -432,6 +443,68 @@
             </form>
             <pre id="mcp-token-output" class="mt-4 hidden overflow-auto rounded-3xl bg-graphite p-4 text-xs text-cloud dark:bg-black/50"></pre>
             <div id="mcp-principals" class="mt-5 space-y-3"></div>
+          </section>
+
+          <section class="rounded-[1.75rem] border border-white/50 bg-white/70 p-6 shadow-panel backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
+            <div>
+              <h2 class="font-display text-2xl font-semibold">opencode-MCP</h2>
+              <p class="mt-2 text-sm text-black/65 dark:text-white/60">
+                Eigener MCP-Endpunkt unter <code>/mcp/opencode</code> mit sieben Werkzeugen f&uuml;r
+                einen Coding-Agenten &mdash; Suchen, Dateien lesen, eigenes Wissen anlegen. Das
+                Arbeitsmodell und die Antwortbudgets stehen hier, nicht im Code: dieselbe
+                Installation l&auml;uft so in jeder Landschaft mit ihrem eigenen Modell.
+              </p>
+            </div>
+            <form id="opencode-mcp-form" class="mt-5 space-y-3">
+              <div class="grid gap-3 lg:grid-cols-2">
+                <label class="block text-sm font-medium">
+                  Gilt f&uuml;r
+                  <select name="principalId" id="opencode-principal-select" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
+                </label>
+                <label class="block text-sm font-medium">
+                  Ziel-Wissensdatenbank zum Schreiben
+                  <select name="writeKnowledgeBaseId" data-knowledge-base-select data-allow-empty data-empty-label="Automatisch: die einzige zugeordnete" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80"></select>
+                </label>
+              </div>
+              <div class="grid gap-3 lg:grid-cols-2">
+                <label class="block text-sm font-medium">
+                  Arbeitsmodell von opencode
+                  <input name="modelName" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="z. B. qwen3-coder-flash" />
+                </label>
+                <label class="block text-sm font-medium">
+                  Kontextfenster (Tokens)
+                  <input name="contextWindowTokens" type="number" min="1000" step="1" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="z. B. 32000" />
+                </label>
+              </div>
+              <div class="grid gap-3 lg:grid-cols-4">
+                <label class="block text-sm font-medium">
+                  Antwortbudget (Zeichen)
+                  <input name="responseBudgetChars" type="number" min="500" step="1" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" />
+                </label>
+                <label class="block text-sm font-medium">
+                  Harter Deckel (Zeichen)
+                  <input name="responseHardCapChars" type="number" min="500" step="1" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" />
+                </label>
+                <label class="block text-sm font-medium">
+                  Treffer je Suche
+                  <input name="defaultTopK" type="number" min="1" max="50" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" />
+                </label>
+                <label class="block text-sm font-medium">
+                  H&ouml;chstens Treffer
+                  <input name="maxTopK" type="number" min="1" max="50" class="mt-2 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" />
+                </label>
+              </div>
+              <p class="text-xs text-black/55 dark:text-white/50">
+                Das Kontextfenster belegt die Budgets beim Umschalten vor; beide bleiben frei
+                &auml;nderbar. Ein Eintrag f&uuml;r einen bestimmten Zugang &uuml;bersteuert die
+                Standardwerte vollst&auml;ndig.
+              </p>
+              <div class="flex flex-wrap gap-2">
+                <button class="rounded-full bg-graphite px-5 py-3 text-sm font-semibold text-white transition hover:bg-ember">Einstellungen speichern</button>
+                <button id="opencode-mcp-delete" type="button" class="hidden rounded-full border border-black/10 bg-white/70 px-4 py-2 text-sm font-semibold transition hover:border-ember dark:border-white/10 dark:bg-white/10">Eigenen Eintrag entfernen</button>
+              </div>
+            </form>
+            <div id="opencode-mcp-documents" class="mt-5 space-y-2"></div>
           </section>
         </section>
 
