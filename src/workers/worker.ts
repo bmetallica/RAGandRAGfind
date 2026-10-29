@@ -10,8 +10,11 @@ import { IngestionService } from "../services/ingestionService";
 import { ReembeddingService } from "../services/reembeddingService";
 import { EmbeddingPendingService } from "../services/embeddingPendingService";
 import { logger } from "../utils/logger";
+import { warnIfRuntimeBrotliVulnerable } from "../utils/runtimeSecurity";
 
 async function startWorker() {
+  warnIfRuntimeBrotliVulnerable("ingestor-worker");
+
   await mkdir(env.UPLOAD_DIR, { recursive: true });
   await mkdir(env.IMPORT_DIR, { recursive: true });
   await mkdir(env.ORIGINAL_STORAGE_DIR, { recursive: true });

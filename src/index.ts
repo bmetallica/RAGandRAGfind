@@ -4,6 +4,7 @@ import pinoHttp from "pino-http";
 import path from "node:path";
 import { env } from "./config/env";
 import { logger } from "./utils/logger";
+import { warnIfRuntimeBrotliVulnerable } from "./utils/runtimeSecurity";
 import { pool } from "./db/pool";
 import runStartupMigrations from "./db/startupMigrations";
 import { resolveMcpPrincipalByToken } from "./services/adminAccessService";
@@ -126,6 +127,8 @@ async function initializeSchedulerWithRetry() {
 }
 
 async function start() {
+  warnIfRuntimeBrotliVulnerable("ingestor-app");
+
   await mkdir(env.UPLOAD_DIR, { recursive: true });
   await mkdir(env.IMPORT_DIR, { recursive: true });
   await mkdir(env.ORIGINAL_STORAGE_DIR, { recursive: true });

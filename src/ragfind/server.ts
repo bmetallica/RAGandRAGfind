@@ -4,6 +4,7 @@ import path from "node:path";
 import { access, readFile } from "node:fs/promises";
 import { env } from "../config/env";
 import { logger } from "../utils/logger";
+import { warnIfRuntimeBrotliVulnerable } from "../utils/runtimeSecurity";
 import { pool } from "../db/pool";
 import type { KnowledgeBaseRecord } from "../services/adminAccessService";
 import { executeSmartSearchQuery } from "../routes/api";
@@ -604,6 +605,8 @@ async function resolveScopedDocument(documentIdRaw: string) {
 }
 
 async function start() {
+  warnIfRuntimeBrotliVulnerable("ragfind");
+
   const app = express();
   app.use(pinoHttp({ logger }));
   app.use(express.json({ limit: "2mb" }));

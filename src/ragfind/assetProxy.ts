@@ -3,7 +3,7 @@ import net from "node:net";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import { logger } from "../utils/logger";
-import { buildHttpAccessConfig, redactProxyUrl, type HttpAccessOptions } from "../utils/httpAccess";
+import { buildHttpAccessConfig, redactProxyUrl, UNTRUSTED_ACCEPT_ENCODING, type HttpAccessOptions } from "../utils/httpAccess";
 
 // Warum es diesen Umweg gibt
 //
@@ -234,7 +234,7 @@ export async function fetchRemoteAsset(rawUrl: string, access?: HttpAccessOption
       maxRedirects: 3,
       // Ohne Referrer erfaehrt die Originalseite nicht, aus welchem Archiv der
       // Abruf kommt - dieselbe Zurueckhaltung wie beim Rahmen selbst.
-      headers: { "User-Agent": "RAGfind-Archive/1.0", Accept: "*/*" },
+      headers: { "User-Agent": "RAGfind-Archive/1.0", Accept: "*/*", "Accept-Encoding": UNTRUSTED_ACCEPT_ENCODING },
       validateStatus: (status) => status >= 200 && status < 300,
       ...buildHttpAccessConfig(access)
     });

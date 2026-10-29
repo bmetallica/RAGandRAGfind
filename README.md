@@ -484,7 +484,10 @@ Dann greifen die Kürzungen nie, und Reranking sowie Embedding sehen den vollst�
 
 ## Anforderungen
 
-- Node.js `20.11+`
+- Node.js `22.23.4+`, `24.22.1+` oder `26.12.1+` – die Container laufen auf Node 24.
+  Ältere Linien enthalten den fehlerhaften Brotli-Dekoder (CVE-2026-111497) und bekommen keinen Fix mehr;
+  Crawl und Archiv-Abruf packen Antworten fremder Server aus und würden ihn erreichen.
+  Jeder Dienst schreibt beim Start eine Warnung, wenn er auf einer solchen Laufzeit läuft.
 - PostgreSQL mit pgvector
 - Redis
 - externer Ollama-Endpunkt

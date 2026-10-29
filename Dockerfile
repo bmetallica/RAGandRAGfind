@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim AS base
+FROM node:24-bookworm-slim AS base
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -19,7 +19,7 @@ COPY public ./public
 COPY migrations ./migrations
 RUN npm run build
 
-FROM node:20-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \

@@ -8,7 +8,7 @@ import { env } from "../config/env";
 import { IngestionService } from "./ingestionService";
 import { isDownloadableDocument, isDownloadableImage } from "../utils/files";
 import { logger } from "../utils/logger";
-import { buildHttpAccessConfig, hasHttpAccessOptions, redactProxyUrl, type HttpAccessOptions } from "../utils/httpAccess";
+import { buildHttpAccessConfig, hasHttpAccessOptions, redactProxyUrl, UNTRUSTED_ACCEPT_ENCODING, type HttpAccessOptions } from "../utils/httpAccess";
 
 interface CrawlOptions {
   startUrl: string;
@@ -211,6 +211,7 @@ export class CrawlService {
     const response = await axios.get<ArrayBuffer>(current.url, {
       responseType: "arraybuffer",
       timeout: 30_000,
+      headers: { "Accept-Encoding": UNTRUSTED_ACCEPT_ENCODING },
       validateStatus: (status) => status >= 200 && status < 400,
       ...requestConfig
     });
@@ -284,6 +285,7 @@ export class CrawlService {
           const fileResponse = await axios.get<ArrayBuffer>(resolved.toString(), {
             responseType: "arraybuffer",
             timeout: 30_000,
+            headers: { "Accept-Encoding": UNTRUSTED_ACCEPT_ENCODING },
             validateStatus: (status) => status >= 200 && status < 400,
             ...requestConfig
           });

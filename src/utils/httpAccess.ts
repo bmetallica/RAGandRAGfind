@@ -13,6 +13,15 @@ export interface HttpAccessOptions {
   ignoreTlsErrors?: boolean;
 }
 
+// CVE-2026-111497: Der Brotli-Dekoder von Node schreibt bei fehlerhaften
+// Daten ueber einen internen Puffer hinaus. Gepatchte Laufzeiten beheben das
+// (siehe utils/runtimeSecurity); unabhaengig davon fragt kein Abruf eines
+// fremden Servers nach "br" - gzip und deflate reichen, der Verkehr bleibt
+// also komprimiert, aber der betroffene Dekoder bekommt nichts zu sehen.
+// Ein Server, der "br" unaufgefordert schickt, umgeht das - deshalb ist die
+// gepatchte Laufzeit der eigentliche Schutz und dies nur die zweite Schicht.
+export const UNTRUSTED_ACCEPT_ENCODING = "gzip, deflate";
+
 interface AgentPair {
   httpAgent: http.Agent;
   httpsAgent: https.Agent;

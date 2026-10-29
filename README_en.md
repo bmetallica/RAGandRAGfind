@@ -461,7 +461,10 @@ truncation paths then never trigger and both embedding and reranking see the ful
 
 ## Requirements
 
-- Node.js `20.11+`
+- Node.js `22.23.4+`, `24.22.1+` or `26.12.1+` – the containers run Node 24.
+  Older lines carry the flawed Brotli decoder (CVE-2026-111497) and will not be fixed;
+  crawling and the archive proxy decompress responses from foreign servers and would reach it.
+  Every service logs a warning at startup when it runs on such a runtime.
 - PostgreSQL with pgvector
 - Redis
 - external Ollama endpoint
