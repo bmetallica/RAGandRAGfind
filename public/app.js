@@ -983,8 +983,15 @@ function renderSourceTypeFilterOptions() {
   });
 }
 
-function renderPrincipalKnowledgeBaseOptions(selectedIds = []) {
+function renderPrincipalKnowledgeBaseOptions(selectedIds = [], { force = false } = {}) {
   if (!principalKnowledgeBaseOptionsEl) {
+    return;
+  }
+
+  // Die Haekchen stehen im Formular. Baut die Hintergrund-Aktualisierung sie
+  // neu, verliert man jede Auswahl, die man gerade getroffen hat - deshalb
+  // nur auf ausdrueckliche Anforderung (Bearbeiten, Zuruecksetzen, Speichern).
+  if (!force && isBeingEdited(mcpPrincipalFormEl)) {
     return;
   }
 
@@ -1015,12 +1022,14 @@ function resetKnowledgeBaseForm() {
   }
 
   state.editingKnowledgeBaseId = null;
+  releaseForm(knowledgeBaseFormEl);
   knowledgeBaseFormEl.reset();
   knowledgeBaseFormEl.elements.isEnabled.checked = true;
 }
 
 function fillKnowledgeBaseForm(knowledgeBase) {
   state.editingKnowledgeBaseId = Number(knowledgeBase.id);
+  releaseForm(knowledgeBaseFormEl);
   knowledgeBaseFormEl.elements.name.value = knowledgeBase.name || "";
   knowledgeBaseFormEl.elements.slug.value = knowledgeBase.slug || "";
   knowledgeBaseFormEl.elements.description.value = knowledgeBase.description || "";
@@ -1094,19 +1103,21 @@ function resetPrincipalForm() {
   }
 
   state.editingPrincipalId = null;
+  releaseForm(mcpPrincipalFormEl);
   mcpPrincipalFormEl.reset();
   mcpPrincipalFormEl.elements.isEnabled.checked = true;
   mcpPrincipalFormEl.elements.canWrite.checked = false;
-  renderPrincipalKnowledgeBaseOptions([]);
+  renderPrincipalKnowledgeBaseOptions([], { force: true });
 }
 
 function fillPrincipalForm(principal) {
   state.editingPrincipalId = Number(principal.id);
+  releaseForm(mcpPrincipalFormEl);
   mcpPrincipalFormEl.elements.name.value = principal.name || "";
   mcpPrincipalFormEl.elements.description.value = principal.description || "";
   mcpPrincipalFormEl.elements.isEnabled.checked = Boolean(principal.isEnabled);
   mcpPrincipalFormEl.elements.canWrite.checked = Boolean(principal.canWrite);
-  renderPrincipalKnowledgeBaseOptions((principal.knowledgeBases || []).map((knowledgeBase) => knowledgeBase.id));
+  renderPrincipalKnowledgeBaseOptions((principal.knowledgeBases || []).map((knowledgeBase) => knowledgeBase.id), { force: true });
 }
 
 function renderMcpPrincipals(principals) {
@@ -1321,7 +1332,12 @@ function renderJobs(jobs) {
           </div>
           <pre class="mt-3 overflow-auto rounded-2xl bg-white/80 p-3 text-xs text-slate-700 dark:bg-black/30 dark:text-slate-200">${formatJson(job.data)}</pre>
           ${job.result ? `<details class="mt-2 rounded-2xl bg-white/80 p-3 text-xs text-slate-700 dark:bg-black/30 dark:text-slate-200"><summary class="cursor-pointer font-semibold">Ergebnis</summary><pre class="mt-2 overflow-auto">${formatJson(job.result)}</pre></details>` : ""}
-          ${job.failedReason ? `<p class="mt-2 text-xs text-rose-700 dark:text-rose-300">${escapeHtml(job.failedReason)}</p>` : ""}
+          ${job.failedReason ? (job.state === "failed"
+            ? `<p class="mt-2 text-xs text-rose-700 dark:text-rose-300">${escapeHtml(job.failedReason)}</p>`
+            // Ein erfolgreicher Lauf behaelt den Grund seines vorherigen
+            // Fehlversuchs. Unbeschriftet sah ein fertiger Job dadurch aus wie
+            // ein gescheiterter - deshalb hier ausdruecklich eingeordnet.
+            : `<details class="mt-2 text-xs text-slate-600 dark:text-slate-300"><summary class="cursor-pointer">Fehler eines frueheren Versuchs</summary><p class="mt-1 break-words">${escapeHtml(job.failedReason)}</p></details>`) : ""}
           ${Array.isArray(job.stacktrace) && job.stacktrace.length ? `<details class="mt-2 rounded-2xl bg-rose-50/80 p-3 text-xs text-rose-900 dark:bg-rose-950/30 dark:text-rose-100"><summary class="cursor-pointer font-semibold">Stacktrace</summary><pre class="mt-2 overflow-auto whitespace-pre-wrap">${escapeHtml(job.stacktrace.join("\n\n"))}</pre></details>` : ""}
         </article>
       `
@@ -1728,6 +1744,10 @@ function renderOpencodeMcpSettings(payload) {
     ? previous
     : "";
 
+  if (isBeingEdited(opencodeMcpFormEl)) {
+    return;
+  }
+
   const principalId = opencodePrincipalSelectEl.value ? Number(opencodePrincipalSelectEl.value) : null;
   const ownEntry = principalId === null ? findOpencodeSettings(null) : findOpencodeSettings(principalId);
   fillOpencodeMcpForm(ownEntry ?? state.opencodeMcpDefaults ?? {
@@ -1784,6 +1804,9 @@ if (opencodePrincipalSelectEl) {
   opencodePrincipalSelectEl.addEventListener("change", () => {
     const principalId = opencodePrincipalSelectEl.value ? Number(opencodePrincipalSelectEl.value) : null;
     const ownEntry = principalId === null ? findOpencodeSettings(null) : findOpencodeSettings(principalId);
+    // Ein Wechsel des Zugangs ist eine ausdrueckliche Ansage: das Formular
+    // zeigt danach dessen Werte, auch wenn vorher etwas eingetippt wurde.
+    releaseForm(opencodeMcpFormEl);
     // Ohne eigenen Eintrag zeigt das Formular die Standardwerte als Vorlage:
     // Speichern legt daraus einen eigenen Eintrag an.
     fillOpencodeMcpForm(ownEntry ?? state.opencodeMcpDefaults, Boolean(ownEntry) && principalId !== null);
@@ -1827,6 +1850,7 @@ if (opencodeMcpFormEl) {
           writeKnowledgeBaseId: String(data.get("writeKnowledgeBaseId") || "") || null
         })
       });
+      releaseForm(opencodeMcpFormEl);
       showToast("opencode-Einstellungen gespeichert");
       await loadOpencodeMcp();
     } catch (error) {
@@ -2354,6 +2378,32 @@ updateAnalysisButtons();
 watchFormEdits(aiProviderSettingsFormEl);
 watchFormEdits(ragfindSettingsFormEl);
 watchFormEdits(documentTypeSettingsEl);
+watchFormEdits(opencodeMcpFormEl);
+watchFormEdits(mcpPrincipalFormEl);
+watchFormEdits(knowledgeBaseFormEl);
+
+// Letzte Absicherung fuer alles, was kein eigenes Formular ist: steht der
+// Mauszeiger gerade in einem Feld, wird diese Runde uebersprungen. Die
+// naechste kommt in zwanzig Sekunden.
+function isEditingSomeField() {
+  const active = globalThis.document.activeElement;
+  if (!active) {
+    return false;
+  }
+
+  if (active.isContentEditable) {
+    return true;
+  }
+
+  return ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)
+    && !["button", "submit", "reset"].includes(active.type);
+}
 
 refreshDashboard().catch((error) => showToast(error.message, true));
-setInterval(() => refreshDashboard().catch(() => undefined), 20000);
+setInterval(() => {
+  if (isEditingSomeField()) {
+    return;
+  }
+
+  refreshDashboard().catch(() => undefined);
+}, 20000);
