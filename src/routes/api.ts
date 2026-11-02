@@ -3646,6 +3646,19 @@ export function createApiRouter(schedulerService: SchedulerService) {
       const category = typeof request.query.category === "string" ? request.query.category.trim().toLowerCase() : "";
       const sourceType = typeof request.query.sourceType === "string" ? request.query.sourceType.trim().toLowerCase() : "";
       const documentTypeFilter = typeof request.query.documentType === "string" ? request.query.documentType.trim().toLowerCase() : "";
+      // Filter nach Wissensdatenbank. "none" trifft die Dokumente, die keiner
+      // zugeordnet sind - sonst waeren sie ueber diesen Filter unerreichbar.
+      // Die Rechte des Zugangs gelten weiter: liegt die gewaehlte Datenbank
+      // nicht in `allowedKnowledgeBaseIds`, bleibt die Liste leer.
+      const rawKnowledgeBase = typeof request.query.knowledgeBaseId === "string"
+        ? request.query.knowledgeBaseId.trim().toLowerCase()
+        : "";
+      const knowledgeBaseFilterId = Number(rawKnowledgeBase);
+      const knowledgeBaseFilterMode = rawKnowledgeBase === "none"
+        ? "none"
+        : Number.isFinite(knowledgeBaseFilterId) && knowledgeBaseFilterId > 0
+          ? "id"
+          : "";
       const sqlLimit = documentTypeFilter ? Math.min(limit * 4, 400) : limit;
       const result = await pool.query<{
         id: number;
@@ -3656,29 +3669,47 @@ export function createApiRouter(schedulerService: SchedulerService) {
         created_at: string;
         updated_at: string;
         metadata: Record<string, unknown> | null;
+        knowledge_base_id: string | number | null;
+        knowledge_base_name: string | null;
         preview: string | null;
         text_length: number;
       }>(
         `
-          SELECT id, title, source_type, source_ref, file_type, created_at, updated_at, metadata,
-                 LEFT(COALESCE(extracted_text, ''), 320) AS preview,
-                 LENGTH(COALESCE(extracted_text, '')) AS text_length
-          FROM documents
+          SELECT d.id, d.title, d.source_type, d.source_ref, d.file_type, d.created_at, d.updated_at, d.metadata,
+                 d.knowledge_base_id,
+                 kb.name AS knowledge_base_name,
+                 LEFT(COALESCE(d.extracted_text, ''), 320) AS preview,
+                 LENGTH(COALESCE(d.extracted_text, '')) AS text_length
+          FROM documents d
+          LEFT JOIN knowledge_bases kb ON kb.id = d.knowledge_base_id
           WHERE (
               $5::bigint[] IS NULL
-              OR (cardinality($5::bigint[]) > 0 AND knowledge_base_id = ANY($5::bigint[]))
+              OR (cardinality($5::bigint[]) > 0 AND d.knowledge_base_id = ANY($5::bigint[]))
             )
-            AND ($1 = '' OR source_type = $1)
+            AND ($1 = '' OR d.source_type = $1)
             AND (
               $2 = ''
-              OR lower(COALESCE(title, '')) LIKE $3
-              OR lower(source_ref) LIKE $3
-              OR lower(COALESCE(metadata->>'uploadedFileName', '')) LIKE $3
+              OR lower(COALESCE(d.title, '')) LIKE $3
+              OR lower(d.source_ref) LIKE $3
+              OR lower(COALESCE(d.metadata->>'uploadedFileName', '')) LIKE $3
             )
-          ORDER BY created_at DESC
+            AND (
+              $6 = ''
+              OR ($6 = 'none' AND d.knowledge_base_id IS NULL)
+              OR ($6 = 'id' AND d.knowledge_base_id = $7::bigint)
+            )
+          ORDER BY d.created_at DESC
           LIMIT $4
         `,
-        [sourceType, rawQuery, `%${rawQuery}%`, sqlLimit, allowedKnowledgeBaseIds ?? null]
+        [
+          sourceType,
+          rawQuery,
+          `%${rawQuery}%`,
+          sqlLimit,
+          allowedKnowledgeBaseIds ?? null,
+          knowledgeBaseFilterMode,
+          knowledgeBaseFilterMode === "id" ? knowledgeBaseFilterId : null
+        ]
       );
       const files = await getDocumentFilesByDocumentIds(result.rows.map((row) => Number(row.id)));
       const payload = result.rows.map((row) => {
@@ -3691,6 +3722,7 @@ export function createApiRouter(schedulerService: SchedulerService) {
         });
         return {
           ...row,
+          knowledge_base_id: row.knowledge_base_id === null ? null : Number(row.knowledge_base_id),
           document_type: documentType,
           original_file: files.get(Number(row.id)) ?? null
         };

@@ -266,7 +266,13 @@
               <label for="document-query" class="mb-2 block text-sm font-medium text-black/65 dark:text-white/60">Suche</label>
               <input id="document-query" name="query" class="min-w-0 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80" placeholder="Suche nach Titel, Dateiname oder Source-Ref" />
             </div>
-            <div class="grid gap-3 lg:grid-cols-3">
+            <div class="grid gap-3 lg:grid-cols-4">
+              <div>
+                <label for="document-knowledge-base" class="mb-2 block text-sm font-medium text-black/65 dark:text-white/60">Wissensdatenbank</label>
+                <select id="document-knowledge-base" name="knowledgeBaseId" data-knowledge-base-filter class="min-w-0 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">
+                  <option value="">Alle Wissensdatenbanken</option>
+                </select>
+              </div>
               <div>
                 <label for="document-category" class="mb-2 block text-sm font-medium text-black/65 dark:text-white/60">Kategorie</label>
                 <select id="document-category" name="category" data-category-select class="min-w-0 w-full rounded-2xl border border-black/10 bg-cloud/70 px-4 py-3 outline-none transition focus:border-lagoon dark:border-white/10 dark:bg-dusk/80">

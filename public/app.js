@@ -28,6 +28,7 @@ importKnowledgeBaseSelectEls.forEach((select) => {
 const documentTypeSelectEls = [...document.querySelectorAll("[data-document-type-select]")];
 const categorySelectEls = [...document.querySelectorAll("[data-category-select]")];
 const sourceTypeSelectEls = [...document.querySelectorAll("[data-source-type-select]")];
+const knowledgeBaseFilterSelectEls = [...document.querySelectorAll("[data-knowledge-base-filter]")];
 const mcpTokenOutputEl = document.getElementById("mcp-token-output");
 const opencodeMcpFormEl = document.getElementById("opencode-mcp-form");
 const opencodePrincipalSelectEl = document.getElementById("opencode-principal-select");
@@ -116,6 +117,7 @@ const state = {
     category: "",
     sourceType: "",
     documentType: "",
+    knowledgeBaseId: "",
     limit: 25
   },
   status: null
@@ -884,6 +886,29 @@ function renderImportKnowledgeBaseOptions() {
   });
 }
 
+// Anders als die Auswahl in den Import-Formularen waehlt dieser Filter nichts
+// vor: "Alle Wissensdatenbanken" ist der Normalfall. Auch abgeschaltete
+// Datenbanken stehen darin, denn ihre Dokumente liegen weiter im Bestand und
+// muessen auffindbar bleiben.
+function renderKnowledgeBaseFilterOptions() {
+  if (!knowledgeBaseFilterSelectEls.length) {
+    return;
+  }
+
+  knowledgeBaseFilterSelectEls.forEach((select) => {
+    const previousValue = String(select.value || "");
+    select.innerHTML = [
+      '<option value="">Alle Wissensdatenbanken</option>',
+      ...state.knowledgeBases.map((knowledgeBase) => `<option value="${escapeHtml(knowledgeBase.id)}">${escapeHtml(knowledgeBase.name)}${knowledgeBase.isEnabled === false ? " (abgeschaltet)" : ""}</option>`),
+      '<option value="none">Ohne Wissensdatenbank</option>'
+    ].join("");
+
+    if (previousValue && [...select.options].some((option) => option.value === previousValue)) {
+      select.value = previousValue;
+    }
+  });
+}
+
 function renderDocumentTypeFilterOptions() {
   if (!documentTypeSelectEls.length) {
     return;
@@ -1005,6 +1030,7 @@ function fillKnowledgeBaseForm(knowledgeBase) {
 function renderKnowledgeBases(knowledgeBases) {
   state.knowledgeBases = knowledgeBases;
   renderImportKnowledgeBaseOptions();
+  renderKnowledgeBaseFilterOptions();
   renderRagfindSettings();
   renderPrincipalKnowledgeBaseOptions(
     state.editingPrincipalId
@@ -1363,6 +1389,7 @@ function renderDocuments(documents) {
               <span>${escapeHtml(document.source_type)}</span>
               <span>${escapeHtml(document.file_type || "unknown")}</span>
               <span>${escapeHtml(document.text_length || 0)} Zeichen</span>
+              <span>${escapeHtml(document.knowledge_base_name || "ohne Wissensdatenbank")}</span>
             </div>
           </div>
           <div class="min-w-0 pt-0.5 text-xs text-slate-600 dark:text-slate-300">
@@ -1578,6 +1605,7 @@ async function loadDocuments() {
   if (filters.category) params.set("category", filters.category);
   if (filters.sourceType) params.set("sourceType", filters.sourceType);
   if (filters.documentType) params.set("documentType", filters.documentType);
+  if (filters.knowledgeBaseId) params.set("knowledgeBaseId", filters.knowledgeBaseId);
   if (filters.limit) params.set("limit", String(filters.limit));
   const documents = await requestJson(`/api/documents?${params.toString()}`);
   renderDocuments(documents);
@@ -1968,7 +1996,8 @@ documentFiltersFormEl.addEventListener("submit", async (event) => {
     category: String(data.get("category") || "").trim(),
     sourceType: String(data.get("sourceType") || "").trim(),
     documentType: String(data.get("documentType") || "").trim(),
-      limit: Number(data.get("limit") || 25)
+    knowledgeBaseId: String(data.get("knowledgeBaseId") || "").trim(),
+    limit: Number(data.get("limit") || 25)
   };
 
   try {
@@ -1988,6 +2017,7 @@ if (documentAdminResetEl) {
       category: "",
       sourceType: "",
       documentType: "",
+      knowledgeBaseId: "",
       limit: 25
     };
 
