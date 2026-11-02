@@ -2,7 +2,7 @@ import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { env } from "../config/env";
 import { pool } from "../db/pool";
-import { IngestionService } from "./ingestionService";
+import { EmptyDocumentError, IngestionService } from "./ingestionService";
 import { createKnowledgeBase, normalizeSlug } from "./adminAccessService";
 import { isSupportedDocument } from "../utils/files";
 import { runWithConcurrency } from "../utils/concurrency";
@@ -25,6 +25,12 @@ interface SyncBucket {
   files: string[];
 }
 
+// Was mit einer einzelnen Datei passiert ist. Ein Lauf ueber das
+// Importverzeichnis darf nicht an einer unlesbaren Datei scheitern: er laeuft
+// im Zeitplan, und bisher blieb nach dem ersten Fehler alles Uebrige liegen -
+// ohne dass jemand es bemerkte, bis die Suche Luecken hatte.
+type FileOutcome = "imported" | "duplicate" | "unchanged" | "empty" | "failed";
+
 export interface DirectorySyncKnowledgeBaseResult {
   knowledgeBaseId: number | null;
   slug: string | null;
@@ -36,6 +42,10 @@ export interface DirectorySyncKnowledgeBaseResult {
   // Files whose bytes are already stored in this knowledge base - skipped
   // before extraction, see ingestBucket.
   unchanged: number;
+  // Files with nothing readable in them, and files that failed for any other
+  // reason. Both are counted instead of ending the run.
+  empty: number;
+  failed: number;
 }
 
 export interface DirectorySyncResult {
@@ -44,6 +54,8 @@ export interface DirectorySyncResult {
   imported: number;
   duplicates: number;
   unchanged: number;
+  empty: number;
+  failed: number;
   knowledgeBases: DirectorySyncKnowledgeBaseResult[];
   skippedDirectories: string[];
 }
@@ -91,6 +103,8 @@ export class DirectorySyncService {
       imported: results.reduce((total, entry) => total + entry.imported, 0),
       duplicates: results.reduce((total, entry) => total + entry.duplicates, 0),
       unchanged: results.reduce((total, entry) => total + entry.unchanged, 0),
+      empty: results.reduce((total, entry) => total + entry.empty, 0),
+      failed: results.reduce((total, entry) => total + entry.failed, 0),
       knowledgeBases: results,
       skippedDirectories: buckets.skippedDirectories
     };
@@ -176,7 +190,7 @@ export class DirectorySyncService {
     const supportedFiles = bucket.files.filter(isSupportedDocument);
     const knownFileHashes = await this.loadKnownFileHashes(bucket.knowledgeBase?.id ?? null);
 
-    const results = await runWithConcurrency(supportedFiles, env.INGESTION_IO_CONCURRENCY, async (filePath) => {
+    const outcomes = await runWithConcurrency<string, FileOutcome>(supportedFiles, env.INGESTION_IO_CONCURRENCY, async (filePath) => {
       const sourceRef = path.relative(rootDir, filePath);
       try {
         // Hash the raw bytes BEFORE handing the file to the ingestion service.
@@ -187,7 +201,7 @@ export class DirectorySyncService {
         // directory costs about a second; OCR-ing it costs tens of minutes.
         const fileHash = sha256(await readFile(filePath));
         if (knownFileHashes.has(fileHash)) {
-          return { unchanged: true as const };
+          return "unchanged";
         }
 
         const result = await this.ingestionService.ingestFile({
@@ -205,25 +219,34 @@ export class DirectorySyncService {
         // Keep the set current within a run, so the same file appearing twice
         // in one directory tree is only extracted once.
         knownFileHashes.add(fileHash);
-        return result;
+        return result.duplicate ? "duplicate" : "imported";
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        throw new Error(`directory sync failed for file \"${sourceRef}\" (${filePath}): ${reason}`, {
-          cause: error
-        });
+        if (error instanceof EmptyDocumentError) {
+          logger.debug({ sourceRef, filePath }, "directory sync skipped a file without readable text");
+          return "empty";
+        }
+
+        logger.warn({ err: error, sourceRef, filePath }, "directory sync skipped a file after an error");
+        return "failed";
       }
     });
 
     let imported = 0;
     let duplicates = 0;
     let unchanged = 0;
-    for (const result of results) {
-      if ("unchanged" in result) {
+    let empty = 0;
+    let failed = 0;
+    for (const outcome of outcomes) {
+      if (outcome === "unchanged") {
         unchanged += 1;
-      } else if (result.duplicate) {
+      } else if (outcome === "duplicate") {
         duplicates += 1;
-      } else {
+      } else if (outcome === "imported") {
         imported += 1;
+      } else if (outcome === "empty") {
+        empty += 1;
+      } else {
+        failed += 1;
       }
     }
 
@@ -235,7 +258,9 @@ export class DirectorySyncService {
       scanned: bucket.files.length,
       imported,
       duplicates,
-      unchanged
+      unchanged,
+      empty,
+      failed
     };
   }
 

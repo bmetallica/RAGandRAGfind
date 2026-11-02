@@ -14,6 +14,22 @@ import { embedPendingQueue } from "../queues";
 import { DocumentClassificationService } from "./classificationService";
 import { getAiProviderSettings } from "./aiProviderSettingsService";
 
+// Eine Datei ohne lesbaren Text ist nicht immer ein Fehler: ein leeres
+// __init__.py gehoert zu jedem Python-Paket, und eine Textdatei mit nur einem
+// Zeilenumbruch ist genauso harmlos. Fuer einen einzelnen Upload bleibt es eine
+// Meldung an den Aufrufer; ein Lauf ueber ein ganzes Repository oder
+// Importverzeichnis soll daran aber nicht sterben, und dazu muss er diesen Fall
+// von einem echten Fehler unterscheiden koennen.
+export class EmptyDocumentError extends Error {
+  readonly sourceRef: string;
+
+  constructor(sourceRef: string) {
+    super(`no text extracted for ${sourceRef}`);
+    this.name = "EmptyDocumentError";
+    this.sourceRef = sourceRef;
+  }
+}
+
 export interface IngestTextInput {
   sourceType: string;
   sourceRef: string;
@@ -150,7 +166,7 @@ export class IngestionService {
   async ingestText(input: IngestTextInput): Promise<{ documentId: number; duplicate: boolean; chunkCount: number }> {
     const normalizedText = normalizeDocumentText(input.text);
     if (!normalizedText) {
-      throw new Error(`no text extracted for ${input.sourceRef}`);
+      throw new EmptyDocumentError(input.sourceRef);
     }
 
     const sanitizedSourceType = sanitizeString(input.sourceType) ?? input.sourceType;

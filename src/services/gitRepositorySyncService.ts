@@ -6,8 +6,9 @@ import path from "node:path";
 import { env } from "../config/env";
 import { sha256 } from "../utils/hash";
 import { isSupportedRepositoryDocument } from "../utils/files";
-import { IngestionService } from "./ingestionService";
+import { EmptyDocumentError, IngestionService } from "./ingestionService";
 import { runWithConcurrency } from "../utils/concurrency";
+import { logger } from "../utils/logger";
 
 const execFileAsync = promisify(execFile);
 const SKIPPED_DIRECTORIES = new Set([
@@ -24,6 +25,14 @@ const SKIPPED_DIRECTORIES = new Set([
   "bin",
   "obj"
 ]);
+
+// Ein Repository bringt immer Dateien mit, aus denen sich nichts lesen laesst:
+// leere __init__.py, Platzhalter, .gitkeep-Artige. Jede einzelne davon riss
+// bisher den ganzen Lauf mit, weil die Aufnahme bei leerem Text wirft und
+// Promise.all beim ersten Fehler aufgibt - aus einem leeren __init__.py wurde
+// ein gescheiterter Import von tausenden Dateien. Deshalb wird hier jede Datei
+// einzeln abgesichert und das Ergebnis zaehlt, was nicht hineinkam.
+type FileOutcome = "imported" | "duplicate" | "empty" | "failed";
 
 export interface GitRepositorySyncOptions {
   repositoryUrl: string;
@@ -59,7 +68,15 @@ async function ensureGitAvailable() {
 export class GitRepositorySyncService {
   constructor(private readonly ingestionService = new IngestionService()) {}
 
-  async sync(options: GitRepositorySyncOptions): Promise<{ scanned: number; imported: number; duplicates: number; skipped: number; repositoryCommit: string | null }> {
+  async sync(options: GitRepositorySyncOptions): Promise<{
+    scanned: number;
+    imported: number;
+    duplicates: number;
+    skipped: number;
+    empty: number;
+    failed: number;
+    repositoryCommit: string | null;
+  }> {
     const repositoryUrl = options.repositoryUrl.trim();
     if (!repositoryUrl) {
       throw new Error("repositoryUrl is required");
@@ -101,6 +118,8 @@ export class GitRepositorySyncService {
     const eligibleFiles: string[] = [];
     let skipped = 0;
 
+    let empty = 0;
+
     for (const filePath of files.filter(isSupportedRepositoryDocument)) {
       const fileStat = await stat(filePath);
       if (fileStat.size > env.GIT_REPO_MAX_FILE_BYTES) {
@@ -108,35 +127,63 @@ export class GitRepositorySyncService {
         continue;
       }
 
+      // Leere Dateien braucht niemand erst durch die Extraktion zu schicken.
+      if (fileStat.size === 0) {
+        empty += 1;
+        continue;
+      }
+
       eligibleFiles.push(filePath);
     }
 
-    const results = await runWithConcurrency(eligibleFiles, env.INGESTION_IO_CONCURRENCY, async (filePath) => {
-      const relativePath = path.relative(checkoutDir, filePath);
-      return this.ingestionService.ingestFile({
-        filePath,
-        sourceType: "git",
-        sourceRef: `${repositoryUrl}${branch ? `#${branch}` : ""}:${relativePath}`,
-        knowledgeBaseId: options.knowledgeBaseId ?? null,
-        sourceUrl: repositoryUrl,
-        metadata: {
-          repositoryUrl,
-          repositoryBranch: branch,
-          repositoryCommit,
-          repositoryRelativePath: relativePath,
-          repositorySubPath: requestedSubPath || null,
-          gitCheckoutDir: checkoutDir
+    const outcomes = await runWithConcurrency<string, FileOutcome>(
+      eligibleFiles,
+      env.INGESTION_IO_CONCURRENCY,
+      async (filePath) => {
+        const relativePath = path.relative(checkoutDir, filePath);
+        const sourceRef = `${repositoryUrl}${branch ? `#${branch}` : ""}:${relativePath}`;
+        try {
+          const result = await this.ingestionService.ingestFile({
+            filePath,
+            sourceType: "git",
+            sourceRef,
+            knowledgeBaseId: options.knowledgeBaseId ?? null,
+            sourceUrl: repositoryUrl,
+            metadata: {
+              repositoryUrl,
+              repositoryBranch: branch,
+              repositoryCommit,
+              repositoryRelativePath: relativePath,
+              repositorySubPath: requestedSubPath || null,
+              gitCheckoutDir: checkoutDir
+            }
+          });
+
+          return result.duplicate ? "duplicate" : "imported";
+        } catch (error) {
+          if (error instanceof EmptyDocumentError) {
+            logger.debug({ sourceRef }, "git sync skipped a file without readable text");
+            return "empty";
+          }
+
+          logger.warn({ err: error, sourceRef }, "git sync skipped a file after an error");
+          return "failed";
         }
-      });
-    });
+      }
+    );
 
     let imported = 0;
     let duplicates = 0;
-    for (const result of results) {
-      if (result.duplicate) {
-        duplicates += 1;
-      } else {
+    let failed = 0;
+    for (const outcome of outcomes) {
+      if (outcome === "imported") {
         imported += 1;
+      } else if (outcome === "duplicate") {
+        duplicates += 1;
+      } else if (outcome === "empty") {
+        empty += 1;
+      } else {
+        failed += 1;
       }
     }
 
@@ -145,6 +192,8 @@ export class GitRepositorySyncService {
       imported,
       duplicates,
       skipped,
+      empty,
+      failed,
       repositoryCommit
     };
   }
