@@ -142,7 +142,9 @@ function formatDate(value) {
   }
 
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString();
+  // Feste deutsche Schreibweise: die Oberflaeche ist deutsch, die Browsersprache
+  // des Betrachters muss das Datum nicht amerikanisch machen.
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("de-DE");
 }
 
 function getClassificationInfo(source) {
@@ -1362,7 +1364,7 @@ function renderSchedules(schedules) {
               <div class="font-semibold">${escapeHtml(schedule.job_type)}</div>
               <div class="text-xs text-slate-500 dark:text-slate-400">${escapeHtml(formatDate(schedule.created_at))}</div>
             </div>
-            <span class="rounded-full bg-mist px-3 py-1 text-xs font-semibold text-spruce dark:bg-aurora/15 dark:text-aurora">${escapeHtml(schedule.cron_expression)}</span>
+            <span class="whitespace-pre rounded-full bg-black/5 px-3 py-1 font-mono text-xs font-semibold text-graphite dark:bg-white/10 dark:text-white">${escapeHtml(schedule.cron_expression)}</span>
           </div>
           <pre class="mt-3 overflow-auto rounded-2xl bg-white/80 p-3 text-xs text-slate-700 dark:bg-black/30 dark:text-slate-200">${formatJson(schedule.payload)}</pre>
         </article>

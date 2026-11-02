@@ -3608,6 +3608,23 @@ export function createApiRouter(schedulerService: SchedulerService) {
     }
   });
 
+  // Die Nutzlast eines Crawl-Jobs enthaelt den Proxy so, wie er eingegeben
+  // wurde - samt Zugangsdaten, wenn welche drinstehen. Angezeigt wird sie im
+  // Admin-UI vollstaendig; in den Metadaten eines Dokuments steht laengst nur
+  // die bereinigte Fassung. Hier dasselbe.
+  function redactJobData(data: unknown): unknown {
+    if (!data || typeof data !== "object") {
+      return data;
+    }
+
+    const payload = data as Record<string, unknown>;
+    if (typeof payload.proxyUrl !== "string" || !payload.proxyUrl) {
+      return payload;
+    }
+
+    return { ...payload, proxyUrl: redactProxyUrl(payload.proxyUrl) };
+  }
+
   router.get("/jobs", async (_request, response, next) => {
     try {
       const [crawlJobs, syncJobs, ingestJobs, gitRepoJobs] = await Promise.all([
@@ -3617,21 +3634,28 @@ export function createApiRouter(schedulerService: SchedulerService) {
         gitRepoSyncQueue.getJobs(["active", "waiting", "completed", "failed"], 0, 20, true)
       ]);
 
+      const jobs = [...crawlJobs, ...syncJobs, ...ingestJobs, ...gitRepoJobs]
+        .sort((left, right) => Number(right.timestamp) - Number(left.timestamp));
+
+      // Der Zustand kommt aus der Queue selbst. Aus den Zeitstempeln abgeleitet
+      // war er falsch: ein gescheiterter Job setzt finishedOn genauso wie ein
+      // erfolgreicher und wurde deshalb als "completed" gemeldet - mit seiner
+      // Fehlermeldung daneben.
+      const states = await Promise.all(jobs.map((job) => job.getState().catch(() => "unknown")));
+
       response.json(
-        [...crawlJobs, ...syncJobs, ...ingestJobs, ...gitRepoJobs]
-          .sort((left, right) => Number(right.timestamp) - Number(left.timestamp))
-          .map((job) => ({
-            id: job.id,
-            name: job.name,
-            queue: job.queueName,
-            state: job.finishedOn ? "completed" : job.failedReason ? "failed" : job.processedOn ? "active" : "waiting",
-            data: job.data,
-            result: job.returnvalue ?? null,
-            failedReason: job.failedReason,
-            stacktrace: Array.isArray(job.stacktrace) ? job.stacktrace : [],
-            timestamp: job.timestamp,
-            finishedOn: job.finishedOn ?? null
-          }))
+        jobs.map((job, index) => ({
+          id: job.id,
+          name: job.name,
+          queue: job.queueName,
+          state: states[index],
+          data: redactJobData(job.data),
+          result: job.returnvalue ?? null,
+          failedReason: job.failedReason,
+          stacktrace: Array.isArray(job.stacktrace) ? job.stacktrace : [],
+          timestamp: job.timestamp,
+          finishedOn: job.finishedOn ?? null
+        }))
       );
     } catch (error) {
       next(error);
